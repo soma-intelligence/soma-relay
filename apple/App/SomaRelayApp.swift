@@ -2,8 +2,10 @@ import SwiftUI
 
 @main
 struct SomaRelayApp: App {
-    @State private var model = AppModel()
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @Environment(\.scenePhase) private var scenePhase
+
+    private var model: AppModel { delegate.model }
 
     var body: some Scene {
         WindowGroup {
@@ -12,7 +14,11 @@ struct SomaRelayApp: App {
                 .task { model.start() }
                 .onOpenURL { model.handle(url: $0) }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .background { model.saveNow() }
+                    switch phase {
+                    case .background: model.didEnterBackground()
+                    case .active: model.didBecomeActive()
+                    default: break
+                    }
                 }
         }
     }

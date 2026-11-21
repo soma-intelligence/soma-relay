@@ -31,6 +31,12 @@ nonisolated struct ConversationRecord: Codable, FetchableRecord, PersistableReco
     var lastTransport: Transport?
     var previewSealed: Data?
     var muted: Bool = false
+    /// Disappearing messages timer in seconds (0 = off), set by a `settings` message.
+    var expireS: Int = 0
+    /// Muted until this time (ms). 0 = not muted, `Int64.max` = always.
+    var mutedUntil: Int64 = 0
+
+    func isMuted(now: Int64 = Clock.nowMs) -> Bool { mutedUntil > now }
 }
 
 nonisolated struct MessageRecord: Codable, FetchableRecord, PersistableRecord, Identifiable, Equatable, Sendable {
@@ -50,6 +56,12 @@ nonisolated struct MessageRecord: Codable, FetchableRecord, PersistableRecord, I
     var replyTo: String?
     /// Sealed local copy of the attachment (relative path in the media folder).
     var mediaPath: String?
+    /// Sealed `MessageState` JSON: reactions, edits, delete, poll votes, live location.
+    var stateSealed: Data? = nil
+    /// Disappearing timer carried by the message (seconds), and when it goes (ms). The clock
+    /// starts when the reader first sees it (sender: when sent).
+    var expireS: Int? = nil
+    var expireAt: Int64? = nil
 }
 
 nonisolated struct OutboxRecord: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
@@ -75,7 +87,7 @@ final class AppDatabase {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SomaRelay", isDirectory: true)
         try? FileManager.default.createDirectory(
-            at: base, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
+            at: base, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var url = base
@@ -89,7 +101,9 @@ final class AppDatabase {
         } else {
             let url = Self.directory().appendingPathComponent("relay.sqlite")
             queue = try DatabaseQueue(path: url.path)
-            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+            // Until first unlock (not complete): pushes and background refresh must open it while
+            // the phone is locked. Bodies are sealed by SecretBox anyway.
+            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
         }
         try migrator.migrate(queue)
     }
@@ -135,6 +149,19 @@ final class AppDatabase {
             try db.create(table: "kv") { t in
                 t.primaryKey("key", .text)
                 t.column("value", .blob).notNull()
+            }
+        }
+        m.registerMigration("v2-messaging") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "stateSealed", .blob)
+                t.add(column: "expireS", .integer)
+                t.add(column: "expireAt", .integer)
+            }
+            try db.create(index: "message_expireAt", on: "message", columns: ["expireAt"])
+            try db.create(index: "message_conversation_ts", on: "message", columns: ["conversationId", "ts"])
+            try db.alter(table: "conversation") { t in
+                t.add(column: "expireS", .integer).notNull().defaults(to: 0)
+                t.add(column: "mutedUntil", .integer).notNull().defaults(to: 0)
             }
         }
         return m
@@ -191,6 +218,50 @@ final class AppDatabase {
 
     func save(_ message: MessageRecord) {
         try? queue.write { db in try message.save(db) }
+    }
+
+    func deleteMessage(_ id: String) {
+        try? queue.write { db in _ = try MessageRecord.deleteOne(db, key: id) }
+    }
+
+    /// Opened state of a message (empty when none).
+    func state(of record: MessageRecord) -> MessageState {
+        record.stateSealed.flatMap { box.open($0) }.flatMap { try? JSONDecoder().decode(MessageState.self, from: $0) } ?? MessageState()
+    }
+
+    /// Read-modify-write of a message state. Returns the record after the change, nil when the
+    /// message is unknown.
+    @discardableResult func updateState(_ id: String, _ change: (inout MessageState, inout MessageRecord) -> Void) -> MessageRecord? {
+        guard var record = message(id) else { return nil }
+        var state = state(of: record)
+        change(&state, &record)
+        record.stateSealed = (try? JSONEncoder().encode(state)).map { box.seal($0) }
+        save(record)
+        return record
+    }
+
+    /// Messages whose disappearing timer ran out.
+    func expiredMessages(now: Int64) -> [MessageRecord] {
+        (try? queue.read { db in
+            try MessageRecord.filter(Column("expireAt") != nil && Column("expireAt") <= now).fetchAll(db)
+        }) ?? []
+    }
+
+    /// Incoming messages with a timer whose clock has not started (not seen yet).
+    func unstartedTimers(in conversationId: String) -> [MessageRecord] {
+        (try? queue.read { db in
+            try MessageRecord.filter(Column("conversationId") == conversationId && Column("expireS") != nil && Column("expireAt") == nil)
+                .fetchAll(db)
+        }) ?? []
+    }
+
+    func nextExpiry() -> Int64? {
+        try? queue.read { db in try Int64.fetchOne(db, sql: "SELECT MIN(expireAt) FROM message WHERE expireAt IS NOT NULL") }
+    }
+
+    /// Every message, newest first, for local search (bodies are opened by the caller).
+    func allMessages(limit: Int = 20_000) -> [MessageRecord] {
+        (try? queue.read { db in try MessageRecord.order(Column("ts").desc).limit(limit).fetchAll(db) }) ?? []
     }
 
     func hasMessage(_ id: String) -> Bool {

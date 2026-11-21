@@ -30,6 +30,21 @@ final class AppModel {
     /// A contact just added: the QR tile turns into the safety words for them.
     var justAdded: ContactJSON?
     var banner: String?
+    /// A conversation to open (notification tap, search hit), with an optional message to show.
+    var openRequest: ChatRoute?
+    /// Live location shares I am running: location message id -> conversation.
+    var liveShares: [String: LiveShare] = [:]
+    @ObservationIgnored var expiryTask: Task<Void, Never>?
+    @ObservationIgnored lazy var locationSharer = LocationSharer(model: self)
+
+    /// Link previews on send (Settings, on by default).
+    var linkPreviews: Bool {
+        didSet { UserDefaults.standard.set(linkPreviews, forKey: "linkPreviews") }
+    }
+    /// Sender and text in notifications (off: "Nouveau message").
+    var notificationPreviews: Bool {
+        didSet { UserDefaults.standard.set(notificationPreviews, forKey: "notificationPreviews") }
+    }
 
     var nodeURL: String {
         didSet {
@@ -61,6 +76,7 @@ final class AppModel {
     private var saveTask: Task<Void, Never>?
     private var lastTypingSent: [String: Date] = [:]
     @ObservationIgnored private var heldGroup: [HeldEnvelope] = []
+    @ObservationIgnored var lastNodeEnvelope = Date.distantPast
 
     private struct HeldEnvelope {
         var env: Data
@@ -77,6 +93,8 @@ final class AppModel {
         handle = args.string(forKey: "handle") ?? ""
         visibleNearby = args.object(forKey: "visibleNearby") as? Bool ?? true
         nodeEnabled = args.object(forKey: "nodeEnabled") as? Bool ?? true
+        linkPreviews = args.object(forKey: "linkPreviews") as? Bool ?? true
+        notificationPreviews = args.object(forKey: "notificationPreviews") as? Bool ?? true
         db = (try? AppDatabase(inMemory: demo)) ?? (try! AppDatabase(inMemory: true))
         node = NodeClient(
             baseURL: URL(string: nodeURL) ?? URL(string: Self.defaultNodeURL)!,
@@ -99,6 +117,8 @@ final class AppModel {
     // MARK: Launch
 
     func start() {
+        guard phase == .loading else { return }
+        Notifier.shared.model = self
         if demo {
             DemoData.seed(self)
             phase = .ready
@@ -108,6 +128,7 @@ final class AppModel {
             core = restored
             didLoadCore()
             phase = .ready
+            runExpiry()
         } else {
             phase = .onboarding
         }
@@ -125,7 +146,7 @@ final class AppModel {
 
     func finishOnboarding() {
         withAnimation(.smooth) { phase = .ready }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        Notifier.shared.requestAuthorization()
     }
 
     /// For tests and demo data.
@@ -142,6 +163,7 @@ final class AppModel {
         reloadConversations()
         restartMesh()
         if nodeEnabled { node.connect() }
+        Notifier.shared.registerForPush()
     }
 
     func restartMesh() {
@@ -214,6 +236,8 @@ final class AppModel {
         c.unread = 0
         db.save(c)
         reloadConversations()
+        startTimers(in: conversationId)
+        Notifier.shared.clear(conversationId)
         // Read receipts for direct chats.
         guard hadUnread || true, c.kind == .direct, let fp = c.peer, !demo else { return }
         let unreadIds = db.messages(in: conversationId, limit: 50).filter { $0.sender != nil && $0.status != .read }.map(\.id)
@@ -235,7 +259,8 @@ final class AppModel {
 
     func items(in conversationId: String) -> [ChatItem] {
         let conv = db.conversation(conversationId)
-        return db.messages(in: conversationId).map { record in
+        let now = Clock.nowMs
+        return db.messages(in: conversationId).filter { ($0.expireAt ?? .max) > now }.map { record in
             ChatItem(record: record, senderName: conv?.kind == .direct ? nil : record.sender.map { name(of: $0) })
         }
     }
@@ -247,21 +272,28 @@ final class AppModel {
     // MARK: Sending
 
     /// Text (and replies) to a conversation.
-    func send(text: String, in conversationId: String, replyTo: String? = nil) {
+    func send(text: String, in conversationId: String, replyTo: String? = nil, link: AppMessage.LinkPreview? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         var message = AppMessage.make(.text, text: trimmed)
         message.replyTo = replyTo
+        message.mentions = mentions(in: trimmed, conversationId: conversationId)
+        message.link = link
         post(message, in: conversationId, preview: trimmed)
     }
 
-    /// Stores then delivers an outgoing message.
+    /// Stores then delivers an outgoing message. Stamps the conversation timer on it.
     func post(_ message: AppMessage, in conversationId: String, preview: String, mediaPath: String? = nil) {
+        var message = message
+        let timer = db.conversation(conversationId)?.expireS ?? 0
+        if timer > 0, message.kind != .settings { message.expireS = timer }
         let record = MessageRecord(
             id: message.id, conversationId: conversationId, sender: nil, ts: message.ts, kind: message.kind.rawValue,
             bodySealed: SecretBox.shared.seal(message.json()), status: .pending, transport: .local, hops: nil, relays: nil,
-            replyTo: message.replyTo, mediaPath: mediaPath)
+            replyTo: message.replyTo, mediaPath: mediaPath, expireS: message.expireS,
+            expireAt: message.expireS.map { message.ts + Int64($0) * 1000 })
         db.save(record)
+        if record.expireAt != nil { scheduleExpiry() }
         touch(conversationId, preview: preview, transport: nil, incoming: false)
         Haptics.soft()
         deliver(message, in: conversationId)
@@ -272,7 +304,7 @@ final class AppModel {
         deliver(item.message, in: record.conversationId)
     }
 
-    private func deliver(_ message: AppMessage, in conversationId: String) {
+    func deliver(_ message: AppMessage, in conversationId: String) {
         guard let core, let conv = db.conversation(conversationId) else { return }
         do {
             switch conv.kind {
@@ -351,7 +383,7 @@ final class AppModel {
         db.enqueue(OutboxRecord(id: UUID().uuidString, messageId: messageId, mailbox: mailbox, peer: peer, envelope: env, createdAt: Clock.nowMs, attempts: 0, meshOnly: false))
     }
 
-    private func update(_ id: String, transport: Transport, status: DeliveryStatus, relays: Int?) {
+    func update(_ id: String, transport: Transport, status: DeliveryStatus, relays: Int?) {
         guard var record = db.message(id) else { return }
         record.transport = transport
         record.status = status
@@ -481,14 +513,36 @@ final class AppModel {
             }
         case .call:
             if let signal = message.call { calls.handle(signal, from: inbound.from) }
-        case .groupOp, .profile, .reaction:
+        case .groupOp, .profile:
             reloadContacts()
-        case .text, .image, .audio, .video, .file:
+        case .reaction:
+            applyReaction(inbound)
+        case .edit:
+            applyEdit(inbound)
+        case .delete:
+            applyDelete(inbound)
+        case .pollVote:
+            applyVote(inbound)
+        case .locationUpdate:
+            applyLocationUpdate(inbound)
+        case .settings:
+            applySettings(inbound, transport: transport, hops: hops)
+        case .text, .image, .audio, .video, .file, .poll, .location:
             store(inbound, transport: transport, hops: hops)
+        case .unknown:
+            // A kind from a newer client: ignored, never shown as unreadable.
+            break
         }
     }
 
-    private func store(_ inbound: InboundJSON, transport: Transport, hops: Int?) {
+    /// Conversation an inbound message belongs to.
+    func conversationId(of inbound: InboundJSON) -> String {
+        if let g = inbound.group { return Self.groupId(g) }
+        if let ch = inbound.channel { return Self.channelId(ch) }
+        return Self.directId(inbound.from)
+    }
+
+    func store(_ inbound: InboundJSON, transport: Transport, hops: Int?) {
         let message = inbound.message
         let conversationId: String
         let title: String
@@ -515,24 +569,31 @@ final class AppModel {
             db.save(ConversationRecord(id: conversationId, kind: kind, title: title, peer: peer, lastAt: message.ts, unread: 0, lastTransport: transport, previewSealed: nil))
         }
         guard !db.hasMessage(message.id) else { return }
+        let seen = activeConversation == conversationId && UIApplication.shared.applicationState == .active
         let record = MessageRecord(
             id: message.id, conversationId: conversationId, sender: inbound.from, ts: message.ts, kind: message.kind.rawValue,
             bodySealed: SecretBox.shared.seal(message.json()), status: .delivered, transport: transport, hops: hops, relays: nil,
-            replyTo: message.replyTo, mediaPath: nil)
+            replyTo: message.replyTo, mediaPath: nil, expireS: message.expireS.flatMap { $0 > 0 ? $0 : nil },
+            expireAt: seen ? message.expireS.flatMap { $0 > 0 ? Clock.nowMs + Int64($0) * 1000 : nil } : nil)
         db.save(record)
+        if record.expireAt != nil { scheduleExpiry() }
         typingUntil[conversationId] = nil
         let preview = Self.previewText(message)
-        touch(conversationId, preview: kind == .direct ? preview : "\(name(of: inbound.from)) : \(preview)", transport: transport, incoming: activeConversation != conversationId)
+        touch(conversationId, preview: kind == .direct ? preview : "\(name(of: inbound.from)) : \(preview)", transport: transport, incoming: !seen)
+
         if message.attachment != nil { fetchAttachment(of: message, recordId: record.id) }
         if kind == .direct {
             var receipt = AppMessage.make(.receipt)
-            receipt.receipt = .init(of: [message.id], state: activeConversation == conversationId ? .read : .delivered, hops: hops)
+            receipt.receipt = .init(of: [message.id], state: seen ? .read : .delivered, hops: hops)
             sendControl(receipt, to: inbound.from)
         }
-        if activeConversation == conversationId {
+        if seen {
             Haptics.soft()
-        } else {
-            notify(title: title, body: preview)
+        } else if message.kind != .settings {
+            let mentioned = core.map { message.mentions?.contains($0.fingerprintHex()) == true } ?? false
+            Notifier.shared.post(
+                conversationId: conversationId, title: title, sender: kind == .direct ? nil : name(of: inbound.from),
+                body: preview, messageId: message.id, muted: db.conversation(conversationId)?.isMuted() == true && !mentioned)
         }
         messageVersion += 1
     }
@@ -543,12 +604,15 @@ final class AppModel {
         case .image: "Photo"
         case .audio: "Note vocale"
         case .video: "Vidéo"
-        case .file: message.attachment?.name ?? "Fichier"
+        case .file: "Document : " + (message.attachment?.name ?? "fichier")
+        case .poll: "Sondage : " + (message.poll?.question ?? "")
+        case .location: message.location?.liveUntil != nil ? "Position en direct" : "Position"
+        case .settings: (message.settings?.expireS ?? 0) > 0 ? "Messages éphémères : " + timerLabel(message.settings?.expireS ?? 0) : "Messages éphémères désactivés"
         default: ""
         }
     }
 
-    private func touch(_ conversationId: String, preview: String, transport: Transport?, incoming: Bool) {
+    func touch(_ conversationId: String, preview: String, transport: Transport?, incoming: Bool) {
         guard var c = db.conversation(conversationId) else { return }
         c.lastAt = Clock.nowMs
         c.previewSealed = SecretBox.shared.seal(preview)
@@ -559,17 +623,6 @@ final class AppModel {
         messageVersion += 1
     }
 
-    private func notify(title: String, body: String) {
-        guard UIApplication.shared.applicationState != .active else {
-            Haptics.tap()
-            return
-        }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
-    }
 
     // MARK: Contacts
 
@@ -739,8 +792,10 @@ final class AppModel {
         node.disconnect()
         mesh.stop()
         calls.endAll()
+        locationSharer.stopAll()
         db.wipe()
         MediaStore.wipe()
+        Notifier.shared.clearAll()
         SecretBox.destroyKey()
         for key in ["handle", "channels", "nodeURL"] { UserDefaults.standard.removeObject(forKey: key) }
         core = nil
@@ -818,6 +873,7 @@ extension AppModel: MeshTransportDelegate {
 extension AppModel: NodeClientDelegate {
     func node(_ node: NodeClient, received envelope: Data) {
         handleEnvelope(envelope, via: .node)
+        lastNodeEnvelope = Date()
     }
 
     func nodeStateChanged(_ node: NodeClient) {

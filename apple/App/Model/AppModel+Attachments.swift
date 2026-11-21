@@ -10,7 +10,7 @@ extension AppModel {
 
     func sendAttachment(
         _ plain: Data, kind: AppMessage.Kind, mime: String, name: String? = nil, width: Int? = nil, height: Int? = nil,
-        durationMs: Int? = nil, thumb: String? = nil, levels: [Float]? = nil, in conversationId: String
+        durationMs: Int? = nil, thumb: String? = nil, levels: [Float]? = nil, pages: Int? = nil, in conversationId: String
     ) async {
         guard let core else { return }
         let sealed = core.sealAttachment(plain)
@@ -20,7 +20,7 @@ extension AppModel {
         let ciphertext = sealed.subdata(in: sealed.startIndex + 64..<sealed.endIndex)
         var attachment = AppMessage.Attachment(
             mime: mime, size: plain.count, sha256: sha.hex, key: Data(key).base64EncodedString(), name: name, width: width, height: height,
-            durationMs: durationMs, thumb: thumb, inline: nil, url: nil, levels: levels)
+            durationMs: durationMs, thumb: thumb, inline: nil, url: nil, levels: levels, pages: pages)
         if ciphertext.count <= Self.inlineLimit {
             attachment.inline = ciphertext.base64EncodedString()
         } else if node.isReady, let url = try? await node.uploadBlob(ciphertext, sha: Data(SHA256.hash(data: ciphertext)).hex) {

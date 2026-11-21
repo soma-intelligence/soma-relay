@@ -3,9 +3,20 @@ import Foundation
 // The JSON structs crossing the core boundary (spec section 5 and core-api.md).
 
 nonisolated struct AppMessage: Codable, Equatable, Sendable {
+    /// Every kind this client understands. Anything else decodes as `.unknown` and is ignored
+    /// (spec v1.1: never "unreadable" for a kind we do not know).
     enum Kind: String, Codable, Sendable {
         case text, image, audio, video, file, receipt, typing, call, reaction, profile
         case groupOp = "group-op"
+        case edit, delete, poll, location, settings
+        case pollVote = "poll-vote"
+        case locationUpdate = "location-update"
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let raw = (try? decoder.singleValueContainer().decode(String.self)) ?? ""
+            self = Kind(rawValue: raw) ?? .unknown
+        }
     }
 
     var id: String
@@ -16,10 +27,57 @@ nonisolated struct AppMessage: Codable, Equatable, Sendable {
     var attachment: Attachment?
     var receipt: Receipt?
     var call: CallSignal?
+    var link: LinkPreview?
+    var forwarded: Bool?
+    var mentions: [String]?
+    var expireS: Int?
+    var poll: Poll?
+    var vote: [String]?
+    var close: Bool?
+    var location: Location?
+    var settings: Settings?
 
     enum CodingKeys: String, CodingKey {
-        case id, ts, kind, text, attachment, receipt, call
+        case id, ts, kind, text, attachment, receipt, call, link, forwarded, mentions, poll, vote, close, location, settings
         case replyTo = "reply_to"
+        case expireS = "expire_s"
+    }
+
+    init(
+        id: String, ts: Int64, kind: Kind, text: String? = nil, replyTo: String? = nil, attachment: Attachment? = nil,
+        receipt: Receipt? = nil, call: CallSignal? = nil
+    ) {
+        self.id = id
+        self.ts = ts
+        self.kind = kind
+        self.text = text
+        self.replyTo = replyTo
+        self.attachment = attachment
+        self.receipt = receipt
+        self.call = call
+    }
+
+    /// Lenient: only `id` is required. A field of the wrong type is dropped, never fatal, so a
+    /// newer client can add fields without breaking this one.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        ts = (try? c.decodeIfPresent(Int64.self, forKey: .ts)) ?? (try? c.decodeIfPresent(Double.self, forKey: .ts)).map { Int64($0) } ?? 0
+        kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
+        text = try? c.decodeIfPresent(String.self, forKey: .text)
+        replyTo = try? c.decodeIfPresent(String.self, forKey: .replyTo)
+        attachment = try? c.decodeIfPresent(Attachment.self, forKey: .attachment)
+        receipt = try? c.decodeIfPresent(Receipt.self, forKey: .receipt)
+        call = try? c.decodeIfPresent(CallSignal.self, forKey: .call)
+        link = try? c.decodeIfPresent(LinkPreview.self, forKey: .link)
+        forwarded = try? c.decodeIfPresent(Bool.self, forKey: .forwarded)
+        mentions = try? c.decodeIfPresent([String].self, forKey: .mentions)
+        expireS = try? c.decodeIfPresent(Int.self, forKey: .expireS)
+        poll = try? c.decodeIfPresent(Poll.self, forKey: .poll)
+        vote = try? c.decodeIfPresent([String].self, forKey: .vote)
+        close = try? c.decodeIfPresent(Bool.self, forKey: .close)
+        location = try? c.decodeIfPresent(Location.self, forKey: .location)
+        settings = try? c.decodeIfPresent(Settings.self, forKey: .settings)
     }
 
     nonisolated struct Attachment: Codable, Equatable, Sendable {
@@ -36,10 +94,49 @@ nonisolated struct AppMessage: Codable, Equatable, Sendable {
         var url: String?
         /// Voice notes: 48 levels in 0...1 for the waveform (client extension, ignored by others).
         var levels: [Float]?
+        /// Documents: page count (PDF), when the sender knows it.
+        var pages: Int?
 
         enum CodingKeys: String, CodingKey {
-            case mime, size, sha256, key, name, width, height, thumb, inline, url, levels
+            case mime, size, sha256, key, name, width, height, thumb, inline, url, levels, pages
             case durationMs = "duration_ms"
+        }
+
+        init(
+            mime: String, size: Int, sha256: String, key: String, name: String? = nil, width: Int? = nil, height: Int? = nil,
+            durationMs: Int? = nil, thumb: String? = nil, inline: String? = nil, url: String? = nil, levels: [Float]? = nil,
+            pages: Int? = nil
+        ) {
+            self.mime = mime
+            self.size = size
+            self.sha256 = sha256
+            self.key = key
+            self.name = name
+            self.width = width
+            self.height = height
+            self.durationMs = durationMs
+            self.thumb = thumb
+            self.inline = inline
+            self.url = url
+            self.levels = levels
+            self.pages = pages
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            mime = (try? c.decodeIfPresent(String.self, forKey: .mime)) ?? "application/octet-stream"
+            size = (try? c.decodeIfPresent(Int.self, forKey: .size)) ?? 0
+            sha256 = (try? c.decodeIfPresent(String.self, forKey: .sha256)) ?? ""
+            key = (try? c.decodeIfPresent(String.self, forKey: .key)) ?? ""
+            name = try? c.decodeIfPresent(String.self, forKey: .name)
+            width = try? c.decodeIfPresent(Int.self, forKey: .width)
+            height = try? c.decodeIfPresent(Int.self, forKey: .height)
+            durationMs = try? c.decodeIfPresent(Int.self, forKey: .durationMs)
+            thumb = try? c.decodeIfPresent(String.self, forKey: .thumb)
+            inline = try? c.decodeIfPresent(String.self, forKey: .inline)
+            url = try? c.decodeIfPresent(String.self, forKey: .url)
+            levels = try? c.decodeIfPresent([Float].self, forKey: .levels)
+            pages = try? c.decodeIfPresent(Int.self, forKey: .pages)
         }
     }
 
@@ -62,6 +159,83 @@ nonisolated struct AppMessage: Codable, Equatable, Sendable {
         enum CodingKeys: String, CodingKey {
             case action, sdp, candidate, video
             case callId = "call_id"
+        }
+    }
+
+    /// Link preview built by the sender (the receiver never fetches anything).
+    nonisolated struct LinkPreview: Codable, Equatable, Sendable {
+        var url: String
+        var title: String?
+        var description: String?
+        var site: String?
+        /// Base64 JPEG, longest side 600 px, at most 40 KiB.
+        var image: String?
+    }
+
+    nonisolated struct Poll: Codable, Equatable, Sendable {
+        nonisolated struct Option: Codable, Equatable, Sendable, Identifiable {
+            var id: String
+            var text: String
+        }
+        var question: String
+        var options: [Option]
+        var multi: Bool
+        var closesAt: Int64?
+
+        enum CodingKeys: String, CodingKey {
+            case question, options, multi
+            case closesAt = "closes_at"
+        }
+
+        init(question: String, options: [Option], multi: Bool, closesAt: Int64? = nil) {
+            self.question = question
+            self.options = options
+            self.multi = multi
+            self.closesAt = closesAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            question = (try? c.decodeIfPresent(String.self, forKey: .question)) ?? ""
+            options = (try? c.decodeIfPresent([Option].self, forKey: .options)) ?? []
+            multi = (try? c.decodeIfPresent(Bool.self, forKey: .multi)) ?? false
+            closesAt = try? c.decodeIfPresent(Int64.self, forKey: .closesAt)
+        }
+    }
+
+    nonisolated struct Location: Codable, Equatable, Sendable {
+        var lat: Double
+        var lon: Double
+        var accuracyM: Double?
+        var name: String?
+        var address: String?
+        var liveUntil: Int64?
+        var heading: Double?
+        var stop: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case lat, lon, name, address, heading, stop
+            case accuracyM = "accuracy_m"
+            case liveUntil = "live_until"
+        }
+
+        init(lat: Double, lon: Double, accuracyM: Double? = nil, name: String? = nil, address: String? = nil, liveUntil: Int64? = nil, heading: Double? = nil, stop: Bool? = nil) {
+            self.lat = lat
+            self.lon = lon
+            self.accuracyM = accuracyM
+            self.name = name
+            self.address = address
+            self.liveUntil = liveUntil
+            self.heading = heading
+            self.stop = stop
+        }
+    }
+
+    nonisolated struct Settings: Codable, Equatable, Sendable {
+        var expireS: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case expireS = "expire_s"
         }
     }
 

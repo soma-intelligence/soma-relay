@@ -27,6 +27,8 @@ final class NodeClient {
     private var reconnect: Task<Void, Never>?
     private var generation = 0
     private var wanted = false
+    /// APNs registration sent after every `ready` (spec v1.1 section 2).
+    private var push: (token: String, env: String)?
 
     init(baseURL: URL, core: @escaping () -> RelayCoreAPI?, card: @escaping () -> String?) {
         self.baseURL = baseURL
@@ -71,8 +73,27 @@ final class NodeClient {
     }
 
     private func set(_ s: State) {
+        let becameReady = s == .ready && state != .ready
         state = s
+        if becameReady { sendPushRegistration() }
         delegate?.nodeStateChanged(self)
+    }
+
+    /// `{"t":"push","kind":"apns","token":hex,"env":"sandbox"|"prod"}`, or `kind: none` to stop.
+    func setPushToken(_ token: String?, env: String) {
+        push = token.map { ($0, env) }
+        if state == .ready { sendPushRegistration() }
+    }
+
+    private func sendPushRegistration() {
+        if let push {
+            send(["t": "push", "kind": "apns", "token": push.token, "env": push.env])
+        }
+    }
+
+    func unregisterPush() {
+        push = nil
+        if state == .ready { send(["t": "push", "kind": "none"]) }
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask, gen: Int) {
@@ -133,6 +154,9 @@ final class NodeClient {
             guard let envText = obj["env"] as? String, let env = Data(base64url: envText) else { return }
             delegate?.node(self, received: env)
             if let id = obj["id"] as? String { send(["t": "ack", "id": id]) }
+        case "push":
+            // {"t":"push","ok":true} or {"ok":false,"reason":"apns_off"}: nothing to do either way.
+            if state == .authenticating { backoff = 1; set(.ready) }
         case "presence":
             let online = Set((obj["online"] as? [String]) ?? [])
             delegate?.node(self, presence: online)

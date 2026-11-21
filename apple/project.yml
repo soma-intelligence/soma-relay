@@ -42,6 +42,12 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        CODE_SIGN_ENTITLEMENTS: App/SomaRelay.entitlements
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
     info:
       path: App/Info.plist
       properties:
@@ -59,6 +65,12 @@ targets:
         UIBackgroundModes:
           - audio
           - voip
+          - location
+          - fetch
+          - remote-notification
+        BGTaskSchedulerPermittedIdentifiers:
+          - me.somalabs.relay.refresh
+        NSLocationWhenInUseUsageDescription: Soma Relay utilise ta position seulement quand tu choisis de l'envoyer ou de la partager en direct dans une conversation.
         NSCameraUsageDescription: Soma Relay utilise la caméra pour scanner le QR d'un contact, prendre des photos et passer des appels vidéo.
         NSMicrophoneUsageDescription: Soma Relay utilise le micro pour les notes vocales et les appels.
         NSPhotoLibraryUsageDescription: Soma Relay accède à tes photos seulement quand tu choisis d'en envoyer une.
