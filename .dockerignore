@@ -1,0 +1,10 @@
+target
+**/node_modules
+apple
+.git
+web/src
+web/public
+web/tests
+docs
+*.bin
+relay-data
