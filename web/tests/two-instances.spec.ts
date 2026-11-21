@@ -55,3 +55,36 @@ test('two instances exchange a message through the node', async ({ browser }) =>
   await ines.keyboard.press('Enter')
   await expect(alice.locator('.bubble', { hasText: reply })).toBeVisible({ timeout: 20_000 })
 })
+
+test('a published handle lets another instance find the card', async ({ browser }) => {
+  const tag = Date.now().toString(36)
+  const handle = `ines-${tag}`.slice(0, 32)
+  const alice = await open(browser, `ha-${tag}`)
+  const ines = await open(browser, `hb-${tag}`)
+  await onboard(alice, 'Alice')
+  await onboard(ines, 'Inès')
+
+  // Production build: the local test bus stays off and is not offered in Settings.
+  await ines.getByRole('tab', { name: 'Réglages' }).click()
+  await expect(ines.getByText('Bus local de test')).toHaveCount(0)
+
+  // Inès publishes her handle once she is authenticated on the node.
+  await ines.fill('#set-handle', handle)
+  const publish = ines.getByRole('button', { name: 'Publier' })
+  await expect(publish).toBeEnabled({ timeout: 15_000 })
+  await publish.click()
+  await expect(ines.getByText('Identifiant publié dans l’annuaire.')).toBeVisible({ timeout: 15_000 })
+
+  // Alice finds her by handle on the same node and writes to her.
+  await alice.getByRole('button', { name: 'Ajouter un contact', exact: true }).first().click()
+  await alice.getByRole('button', { name: 'Identifiant' }).click()
+  await alice.fill('#add-handle', handle)
+  await alice.getByRole('button', { name: 'Chercher dans l’annuaire' }).click()
+
+  const hello = `Trouvée par ${handle}`
+  await alice.fill('#composer-input', hello)
+  await alice.keyboard.press('Enter')
+  await ines.getByRole('tab', { name: 'Discussions' }).click()
+  await ines.getByRole('listitem').filter({ hasText: 'Alice' }).first().click()
+  await expect(ines.locator('.bubble', { hasText: hello })).toBeVisible({ timeout: 20_000 })
+})
