@@ -1,0 +1,33 @@
+[package]
+name = "relay-core"
+description = "Soma Relay core: hybrid post-quantum identity, sessions, groups, envelopes and mesh routing (sans-IO)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Exposes `RelayEngine::create_with_seed` (deterministic keys) to other crates' tests.
+testing = []
+
+[dependencies]
+libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem1024"] }
+libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa87"] }
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize", "fast"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+sha3 = "0.10"
+subtle = "2"
+getrandom = "0.4"
+zeroize = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = "1"
+base64 = "0.22"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
