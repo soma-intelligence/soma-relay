@@ -50,6 +50,10 @@ export interface Snapshot {
 const INLINE_MAX = 48 * 1024
 const RANK: Record<Status, number> = { failed: 0, pending: 1, sent: 2, delivered: 3, read: 4 }
 
+const BUS_PARAM = new URLSearchParams(location.search).get('bus')
+/** The local test bus can be offered in the UI (dev server, or ?bus=1). */
+export const LOCAL_BUS_AVAILABLE = import.meta.env.DEV || BUS_PARAM === '1'
+
 const DEFAULT_SETTINGS: Settings = { nodeUrl: '', handle: '', localBus: false, p2p: true }
 
 export function convIdFor(inbound: { from: string; group?: string }): string {
@@ -169,9 +173,11 @@ export class Relay {
       this.store = await Storage.open()
       this.factory = await loadEngineFactory()
       const settings = this.snap.settings
-      // The mock cannot authenticate to a real node, and the dev server has no node: the local
-      // bus between tabs is on by default there.
-      if ((this.factory.kind === 'mock' || import.meta.env.DEV) && localGet('settings') === null) settings.localBus = true
+      // The local bus between tabs is a test transport. Production builds keep it off unless
+      // the page is opened with ?bus=1; the dev server turns it on by default (no node there).
+      if (BUS_PARAM === '1') settings.localBus = true
+      else if (BUS_PARAM === '0' || !import.meta.env.DEV) settings.localBus = false
+      else if (localGet('settings') === null) settings.localBus = true
       this.set({ engineKind: this.factory.kind, settings: { ...settings } })
       const state = await this.store.getBytes('meta', 'engine')
       if (!state) {
@@ -1051,14 +1057,31 @@ export class Relay {
     if (!this.node) return 'Aucun nœud.'
     await this.updateSettings({ handle: h })
     try {
-      const r = await this.node.registerHandle(h, this.myCard())
+      const r = await this.node.registerHandle(h)
+      // Signing builds a fresh card and remembers the handle inside the engine.
+      this.persist()
       if (r.ok) {
         this.node.reregister()
         return null
       }
-      if (r.msg === 'unsupported') return 'Le moteur ne sait pas encore signer pour l’annuaire.'
+      switch (r.code) {
+        case 'unsupported':
+          return 'Le moteur ne sait pas encore signer pour l’annuaire.'
+        case 'handle_taken':
+          return 'Cet identifiant est déjà pris.'
+        case 'too_many_handles':
+          return 'Tu as déjà 5 identifiants sur ce nœud.'
+        case 'unknown_mailbox':
+          return 'Connecte-toi d’abord au nœud, puis réessaie.'
+        case 'bad_signature':
+          return 'Le nœud n’a pas reconnu ta signature.'
+        case 'card_rejected':
+          return 'Le nœud a refusé ta carte.'
+      }
       return r.status === 409 ? 'Cet identifiant est déjà pris.' : `Le nœud a refusé (${r.status}).`
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && (e.name === 'Malformed' || (e as { code?: string }).code === 'Malformed'))
+        return 'De 3 à 32 caractères : lettres, chiffres, point, tiret.'
       return 'Nœud injoignable.'
     }
   }

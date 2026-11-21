@@ -8,6 +8,7 @@
 // null, and arrays of byte arrays may come back as a JS array of Uint8Array.
 
 import type {
+  DirectoryEntry,
   AppMessage,
   CompactLink,
   Contact,
@@ -142,9 +143,9 @@ class WasmEngineImpl implements Engine {
 
   callKey = (fp: string, callId: string) => bytes(this.call('callKey', fp, callId))
 
-  get signDetached(): ((m: Uint8Array) => Uint8Array) | undefined {
-    if (typeof this.raw.signDetached !== 'function') return undefined
-    return (m: Uint8Array) => bytes(this.call('signDetached', m))
+  get signDirectoryEntry(): ((handle: string) => DirectoryEntry) | undefined {
+    if (typeof this.raw.signDirectoryEntry !== 'function') return undefined
+    return (handle: string) => json<DirectoryEntry>(this.call('signDirectoryEntry', handle))
   }
 
   /**

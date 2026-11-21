@@ -224,24 +224,31 @@ export class NodeClient {
   }
 
   /**
-   * Publishes the card under a handle: `PUT /v1/directory/{handle}` with the raw card as body,
-   * `X-Relay-Mailbox` and `X-Relay-Sig` (Ed25519 over the card bytes with the device key the
-   * node bound to this mailbox at WebSocket auth).
+   * Publishes the card under a handle (docs/node-protocol.md): `PUT /v1/directory/{handle}`,
+   * body = the card text signed by the core, `X-Relay-Mailbox` and `X-Relay-Sig` (Ed25519 by
+   * the device key the node bound to this mailbox at WebSocket auth). `code` is the node's
+   * error code (`handle_taken`, `too_many_handles`, `bad_signature`...).
    */
-  async registerHandle(handle: string, card: string): Promise<{ ok: boolean; status: number; msg: string }> {
-    if (!this.engine.signDetached) return { ok: false, status: 0, msg: 'unsupported' }
-    const body = utf8(card)
-    const sig = this.engine.signDetached(body)
+  async registerHandle(handle: string): Promise<{ ok: boolean; status: number; code: string }> {
+    if (!this.engine.signDirectoryEntry) return { ok: false, status: 0, code: 'unsupported' }
+    const entry = this.engine.signDirectoryEntry(handle)
     const r = await fetch(this.url(`/v1/directory/${encodeURIComponent(handle)}`), {
       method: 'PUT',
       headers: {
         'content-type': 'text/plain; charset=utf-8',
         'x-relay-mailbox': this.engine.mailboxHex(),
-        'x-relay-sig': toB64Url(sig),
+        'x-relay-sig': entry.sig_b64,
       },
-      body: card,
+      body: entry.card,
     })
-    return { ok: r.ok, status: r.status, msg: r.ok ? '' : await r.text().catch(() => '') }
+    if (r.ok) return { ok: true, status: r.status, code: '' }
+    let code = ''
+    try {
+      code = String(((await r.json()) as { error?: string; code?: string }).error ?? '')
+    } catch {
+      /* not JSON */
+    }
+    return { ok: false, status: r.status, code }
   }
 
   async health(): Promise<boolean> {

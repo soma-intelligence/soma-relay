@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { relay } from '../state/relay'
+import { LOCAL_BUS_AVAILABLE, relay } from '../state/relay'
 import { downloadBlob, useRelay } from './common'
 import { frameE2eeSupported } from '../calls/callManager'
 
@@ -132,6 +132,7 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
               onChange={(e) => void relay.updateSettings({ p2p: e.target.checked })}
             />
           </label>
+          {LOCAL_BUS_AVAILABLE && (
           <label className="set-row">
             <span className="lbl">
               Bus local de test
@@ -144,6 +145,7 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
               onChange={(e) => void relay.updateSettings({ localBus: e.target.checked })}
             />
           </label>
+          )}
           <div className="set-row">
             <span className="lbl">
               Mesh Bluetooth et Wi-Fi

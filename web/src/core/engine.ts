@@ -95,6 +95,13 @@ export interface Group {
   mailboxes?: string[]
 }
 
+export interface DirectoryEntry {
+  /** `relay1:` card text, the PUT body. */
+  card: string
+  /** Signature, base64url without padding, the `X-Relay-Sig` value. */
+  sig_b64: string
+}
+
 /** Envelope header fields read on the client side (not part of the core API). */
 export interface EnvelopeHeader {
   kind: number
@@ -175,10 +182,11 @@ export interface Engine {
   callKey(fp: string, callId: string): Uint8Array
 
   /**
-   * Optional, not in core-api yet: Ed25519 signature by the device key over raw bytes, used by
-   * the node directory (`X-Relay-Sig`). Absent: handle publishing is unavailable.
+   * Own card carrying `handle`, plus the Ed25519 directory signature over
+   * "soma-relay/directory/v1" || u8 len(handle) || handle || card bytes, for
+   * `PUT /v1/directory/{handle}` (`X-Relay-Sig`). Absent in older cores: no handle publishing.
    */
-  signDetached?(message: Uint8Array): Uint8Array
+  signDirectoryEntry?(handle: string): DirectoryEntry
 
   // Client-side helper, not in the core: reads the postcard header of an envelope.
   envelopeHeader(envelope: Uint8Array): EnvelopeHeader | null
