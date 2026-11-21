@@ -812,6 +812,12 @@ public protocol RelayEngineProtocol: AnyObject, Sendable {
     
     func setVerified(fp: String, verified: Bool) 
     
+    /**
+     * Own card carrying `handle` plus its directory signature, for
+     * `PUT /v1/directory/{handle}` (body = `card`, `X-Relay-Sig` = base64url of `sig`).
+     */
+    func signDirectoryEntry(handle: String) throws  -> DirectoryEntry
+    
     func signNodeChallenge(nonce: Data)  -> Data
     
 }
@@ -1267,6 +1273,20 @@ open func setVerified(fp: String, verified: Bool)  {try! rustCall() {
 }
 }
     
+    /**
+     * Own card carrying `handle` plus its directory signature, for
+     * `PUT /v1/directory/{handle}` (body = `card`, `X-Relay-Sig` = base64url of `sig`).
+     */
+open func signDirectoryEntry(handle: String)throws  -> DirectoryEntry  {
+    return try  FfiConverterTypeDirectoryEntry_lift(try rustCallWithError(FfiConverterTypeRelayError_lift) {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_method_relayengine_sign_directory_entry(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(handle),uniffiCallStatus
+    )
+})
+}
+    
 open func signNodeChallenge(nonce: Data) -> Data  {
     return try!  FfiConverterData.lift(try! rustCall() {
         uniffiCallStatus in
@@ -1323,6 +1343,63 @@ public func FfiConverterTypeRelayEngine_lower(_ value: RelayEngine) -> UInt64 {
 }
 
 
+
+
+/**
+ * Result of `sign_directory_entry`.
+ */
+public struct DirectoryEntry: Equatable, Hashable {
+    public var card: String
+    public var sig: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(card: String, sig: Data) {
+        self.card = card
+        self.sig = sig
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DirectoryEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectoryEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryEntry {
+        return
+            try DirectoryEntry(
+                card: FfiConverterString.read(from: &buf), 
+                sig: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DirectoryEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.card, into: &buf)
+        FfiConverterData.write(value.sig, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectoryEntry_lift(_ buf: RustBuffer) throws -> DirectoryEntry {
+    return try FfiConverterTypeDirectoryEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectoryEntry_lower(_ value: DirectoryEntry) -> RustBuffer {
+    return FfiConverterTypeDirectoryEntry.lower(value)
+}
 
 
 public struct MeshResult: Equatable, Hashable {
@@ -1752,6 +1829,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_relay_ffi_checksum_method_relayengine_set_verified() != 36933) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_method_relayengine_sign_directory_entry() != 368) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_relay_ffi_checksum_method_relayengine_sign_node_challenge() != 8444) {

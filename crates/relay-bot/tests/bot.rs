@@ -47,8 +47,9 @@ impl Engine for PlainEngine {
     fn my_card(&self, node_url: Option<String>, _handle: Option<String>) -> String {
         format!("relay1:{}", URL_SAFE_NO_PAD.encode(self.card_json(node_url).to_string()))
     }
-    fn sign_directory_card(&self, card: &str) -> Result<Vec<u8>, EngineError> {
-        Ok(self.key.sign(card.as_bytes()).to_bytes().to_vec())
+    fn sign_directory_entry(&self, handle: &str) -> Result<(String, Vec<u8>), EngineError> {
+        let card = self.my_card(None, Some(handle.into()));
+        Ok((card.clone(), self.key.sign(&relay_core::card::directory_message(handle, card.as_bytes())).to_bytes().to_vec()))
     }
     fn my_compact_link(&self, node_url: Option<String>) -> String {
         let j = json!({"fingerprint": self.fingerprint_hex(), "node_url": node_url});
@@ -395,4 +396,27 @@ async fn handle_claimed_on_startup_and_used_to_send() {
     assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
     let msgs = wait_messages(&http, &w, 0, 1).await;
     assert_eq!(msgs[0]["message"]["text"], "forecast?");
+}
+
+#[tokio::test]
+async fn core_engine_claims_its_handle() {
+    use relay_bot::engine::CoreEngine;
+
+    let dir = tempfile::tempdir().unwrap();
+    let node = start_node(dir.path()).await;
+    let w = start_bot_with(node, dir.path(), "meteo", Arc::new(CoreEngine::create("meteo")), None, Some("meteo".into())).await;
+    let http = reqwest::Client::new();
+    let mut card = None;
+    for _ in 0..100 {
+        let r = http.get(format!("http://{node}/v1/directory/meteo")).send().await.unwrap();
+        if r.status() == 200 {
+            card = Some(r.text().await.unwrap());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let card = card.expect("handle was not published");
+    let parsed = relay_core::card::Card::parse(&card).unwrap();
+    assert_eq!(parsed.body.handle.as_deref(), Some("meteo"));
+    assert_eq!(hex::encode(parsed.fingerprint()), w.bot.engine.fingerprint_hex());
 }

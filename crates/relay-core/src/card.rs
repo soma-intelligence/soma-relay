@@ -47,6 +47,28 @@ pub fn mailbox(fp: &[u8; 32]) -> [u8; 16] {
     m
 }
 
+/// Domain of the directory entry signature (`PUT /v1/directory/{handle}`).
+pub const DIRECTORY_DOMAIN: &[u8] = b"soma-relay/directory/v1";
+
+/// Directory handle rule shared with the node: 3 to 32 characters from `[a-z0-9_.-]`.
+pub fn valid_handle(handle: &str) -> bool {
+    (3..=32).contains(&handle.len())
+        && handle.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'.' | b'-'))
+}
+
+/// Bytes signed with the Ed25519 identity key for a directory entry:
+/// `"soma-relay/directory/v1" || u8 len(handle) || handle || card bytes`, where the card bytes
+/// are the UTF-8 `relay1:` text sent as the PUT body.
+pub fn directory_message(handle: &str, card: &[u8]) -> Vec<u8> {
+    let h = handle.as_bytes();
+    let mut m = Vec::with_capacity(DIRECTORY_DOMAIN.len() + 1 + h.len() + card.len());
+    m.extend_from_slice(DIRECTORY_DOMAIN);
+    m.push(h.len().min(255) as u8);
+    m.extend_from_slice(&h[..h.len().min(255)]);
+    m.extend_from_slice(card);
+    m
+}
+
 pub fn signed_message(body: &CardBody) -> Vec<u8> {
     let mut m = CARD_DOMAIN.to_vec();
     m.extend_from_slice(&to_postcard(body));

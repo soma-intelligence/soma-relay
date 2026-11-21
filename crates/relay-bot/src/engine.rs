@@ -75,11 +75,10 @@ pub trait Engine: Send + Sync + 'static {
     fn open(&self, envelope: &[u8], now_ms: i64) -> Result<Option<serde_json::Value>, EngineError>;
     /// Whole engine state, to be saved after every mutating call.
     fn export_state(&self) -> Vec<u8>;
-    /// Ed25519 signature of this identity's own card text, for `PUT /v1/directory/{handle}`
-    /// (`X-Relay-Sig`). Engines that cannot sign it return an error and the bot skips the claim.
-    fn sign_directory_card(&self, _card: &str) -> Result<Vec<u8>, EngineError> {
-        Err(EngineError("relay-core exposes no directory card signature yet".into()))
-    }
+    /// Own card carrying `handle` and the Ed25519 signature over
+    /// `"soma-relay/directory/v1" || u8 len(handle) || handle || card`, for
+    /// `PUT /v1/directory/{handle}` (body = card, `X-Relay-Sig` = signature).
+    fn sign_directory_entry(&self, handle: &str) -> Result<(String, Vec<u8>), EngineError>;
 }
 
 /// Loads the engine from `state_path`, or creates a new identity named `name` there.
@@ -191,5 +190,8 @@ impl Engine for CoreEngine {
     }
     fn export_state(&self) -> Vec<u8> {
         self.lock().export_state()
+    }
+    fn sign_directory_entry(&self, handle: &str) -> Result<(String, Vec<u8>), EngineError> {
+        self.lock().sign_directory_entry(handle).map_err(err)
     }
 }

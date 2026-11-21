@@ -310,6 +310,20 @@ impl RelayEngine {
         self.st.identity.sign.ed_sign(&m).to_vec()
     }
 
+    /// Own card carrying `handle` (and the remembered node URL), plus the Ed25519 signature
+    /// over `card::directory_message(handle, card)` for `PUT /v1/directory/{handle}`.
+    /// Signs only this identity's own card, never caller-supplied bytes. The handle is
+    /// remembered like `my_card` does. `&mut` because building a card signs it (ML-DSA).
+    pub fn sign_directory_entry(&mut self, handle: &str) -> Result<(String, Vec<u8>)> {
+        if !card::valid_handle(handle) {
+            return Err(RelayError::Malformed("handle must be 3-32 chars from [a-z0-9_.-]".into()));
+        }
+        let node_url = self.st.identity.node_url.clone();
+        let text = self.my_card(node_url, Some(handle.to_string()));
+        let sig = self.st.identity.sign.ed_sign(&card::directory_message(handle, text.as_bytes()));
+        Ok((text, sig.to_vec()))
+    }
+
     pub fn rotate_prekey_if_due(&mut self, now_ms: i64) -> bool {
         self.tick(now_ms);
         let id = &mut self.st.identity;

@@ -126,6 +126,13 @@ impl RelayEngine {
         self.lock().sign_node_challenge(&nonce)
     }
 
+    /// Own card carrying `handle` plus its directory signature, for
+    /// `PUT /v1/directory/{handle}` (body = `card`, `X-Relay-Sig` = base64url of `sig`).
+    pub fn sign_directory_entry(&self, handle: String) -> Result<DirectoryEntry> {
+        let (card, sig) = self.lock().sign_directory_entry(&handle)?;
+        Ok(DirectoryEntry { card, sig })
+    }
+
     pub fn rotate_prekey_if_due(&self, now_ms: i64) -> bool {
         self.lock().rotate_prekey_if_due(now_ms)
     }
@@ -237,6 +244,13 @@ impl RelayEngine {
     pub fn envelope_info(&self, envelope: Vec<u8>) -> Result<String> {
         Ok(core::RelayEngine::envelope_info(&envelope)?)
     }
+}
+
+/// Result of `sign_directory_entry`.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct DirectoryEntry {
+    pub card: String,
+    pub sig: Vec<u8>,
 }
 
 #[derive(uniffi::Record, Debug, Clone)]

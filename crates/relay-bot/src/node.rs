@@ -163,8 +163,7 @@ async fn session(bot: &Arc<Bot>, outbox: &mut mpsc::Receiver<Outgoing>) -> anyho
 /// Publishes the card under `handle` (`PUT /v1/directory/{handle}`). Needs a prior auth on
 /// the node, which binds the mailbox key the signature is checked against.
 pub async fn claim_handle(bot: &Bot, handle: &str) -> Result<(), String> {
-    let card = bot.my_card();
-    let sig = bot.engine.sign_directory_card(&card).map_err(|e| e.to_string())?;
+    let (card, sig) = bot.engine.sign_directory_entry(handle).map_err(|e| e.to_string())?;
     let r = bot
         .http
         .put(format!("{}/v1/directory/{handle}", bot.node_base()))

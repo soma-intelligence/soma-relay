@@ -195,8 +195,17 @@ PUT body: the card bytes. Headers:
 
 - `X-Relay-Mailbox: <hex16>`: the mailbox claiming the handle. It must have authenticated
   over `/v1/ws` at least once (so the node knows its bound key).
-- `X-Relay-Sig: <b64 Ed25519 signature>`: signature of the exact body bytes by the key
-  bound to that mailbox.
+- `X-Relay-Sig: <b64 Ed25519 signature>`: signature by the key bound to that mailbox over
+
+  ```
+  "soma-relay/directory/v1" || u8 len(handle) || handle || card bytes
+  ```
+
+  where `handle` is the path segment and the card bytes are the exact PUT body. Binding the
+  handle means a signature captured for one handle cannot be replayed under another.
+  relay-core produces both the card and the signature: `sign_directory_entry(handle)`
+  (Swift `signDirectoryEntry(handle:)` returning `DirectoryEntry {card, sig}`, web
+  `signDirectoryEntry(handle)` returning JSON `{"card","sig_b64"}`).
 
 Responses:
 
@@ -205,7 +214,7 @@ Responses:
 - `409 handle_taken`: the handle belongs to another mailbox.
 - `409 too_many_handles`: the mailbox already holds 5 handles.
 - `403 unknown_mailbox`: the mailbox never authenticated on this node.
-- `403 bad_signature`: the signature does not match the bound key.
+- `403 bad_signature`: the signature does not verify for this handle, body and bound key.
 - `400 bad_handle`, `400 bad_mailbox`, `400 bad_signature` (missing or badly encoded header).
 - `422 card_rejected`: refused by the node's card verifier.
 

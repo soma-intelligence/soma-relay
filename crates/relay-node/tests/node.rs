@@ -161,6 +161,15 @@ impl Client {
     fn sign(&self, data: &[u8]) -> String {
         b64(&self.key.sign(data).to_bytes())
     }
+
+    /// Directory signature: `"soma-relay/directory/v1" || u8 len || handle || card`.
+    fn sign_dir(&self, handle: &str, card: &[u8]) -> String {
+        let mut m = b"soma-relay/directory/v1".to_vec();
+        m.push(handle.len() as u8);
+        m.extend(handle.as_bytes());
+        m.extend(card);
+        self.sign(&m)
+    }
 }
 
 #[tokio::test]
@@ -345,19 +354,25 @@ async fn directory_first_come() {
     };
 
     // Bad handle.
-    let r = put("IN", ma, b"relay1:a", a.sign(b"relay1:a")).await.unwrap();
+    let r = put("IN", ma, b"relay1:a", a.sign_dir("IN", b"relay1:a")).await.unwrap();
     assert_eq!(r.status(), 400);
     // Signature by the wrong key.
-    let r = put("ines", ma, b"relay1:a", b.sign(b"relay1:a")).await.unwrap();
+    let r = put("ines", ma, b"relay1:a", b.sign_dir("ines", b"relay1:a")).await.unwrap();
+    assert_eq!(r.status(), 403);
+    // A signature for another handle does not carry over (the handle is signed).
+    let r = put("ines", ma, b"relay1:a", a.sign_dir("ines2", b"relay1:a")).await.unwrap();
+    assert_eq!(r.status(), 403);
+    // A plain signature over the card bytes is not enough either.
+    let r = put("ines", ma, b"relay1:a", a.sign(b"relay1:a")).await.unwrap();
     assert_eq!(r.status(), 403);
     // First come.
-    let r = put("ines", ma, b"relay1:a", a.sign(b"relay1:a")).await.unwrap();
+    let r = put("ines", ma, b"relay1:a", a.sign_dir("ines", b"relay1:a")).await.unwrap();
     assert_eq!(r.status(), 201);
     // Someone else: conflict.
-    let r = put("ines", mb, b"relay1:b", b.sign(b"relay1:b")).await.unwrap();
+    let r = put("ines", mb, b"relay1:b", b.sign_dir("ines", b"relay1:b")).await.unwrap();
     assert_eq!(r.status(), 409);
     // Owner may update.
-    let r = put("ines", ma, b"relay1:a2", a.sign(b"relay1:a2")).await.unwrap();
+    let r = put("ines", ma, b"relay1:a2", a.sign_dir("ines", b"relay1:a2")).await.unwrap();
     assert_eq!(r.status(), 200);
 
     let r = http.get(node.http("/v1/directory/ines")).send().await.unwrap();
@@ -369,7 +384,8 @@ async fn directory_first_come() {
 
     // A mailbox that never authenticated cannot claim.
     let (kz, mz) = Client::identity(13);
-    let r = put("zed", mz, b"relay1:z", b64(&kz.sign(b"relay1:z").to_bytes())).await.unwrap();
+    let zed = Client { ws: Client::connect_raw(&node).await, key: kz };
+    let r = put("zed", mz, b"relay1:z", zed.sign_dir("zed", b"relay1:z")).await.unwrap();
     assert_eq!(r.status(), 403);
 }
 
@@ -462,4 +478,19 @@ async fn core_verifier_accepts_real_cards_only() {
     assert_eq!(c.recv().await["t"], "registered");
     let r = http.get(node.http(&format!("/v1/cards/{}", hex::encode(mailbox)))).send().await.unwrap();
     assert_eq!(r.text().await.unwrap(), card);
+
+    // Directory entry signed by the engine itself.
+    let (entry, sig) = eng.sign_directory_entry("ada").unwrap();
+    let put = |handle: &str, body: String, sig: &[u8]| {
+        http.put(node.http(&format!("/v1/directory/{handle}")))
+            .header("X-Relay-Mailbox", hex::encode(mailbox))
+            .header("X-Relay-Sig", b64(sig))
+            .body(body)
+            .send()
+    };
+    // Replaying it under another handle fails.
+    assert_eq!(put("ada2", entry.clone(), &sig).await.unwrap().status(), 403);
+    assert_eq!(put("ada", entry.clone(), &sig).await.unwrap().status(), 201);
+    let r = http.get(node.http("/v1/directory/ada")).send().await.unwrap();
+    assert_eq!(r.text().await.unwrap(), entry);
 }

@@ -167,7 +167,10 @@ async fn put_handle(
         }
     };
     let verified = VerifyingKey::from_bytes(&binding.pubkey)
-        .map(|vk| vk.verify(&card, &Signature::from_bytes(&sig)).is_ok())
+        .map(|vk| {
+            let msg = relay_core::card::directory_message(&handle, &card);
+            vk.verify(&msg, &Signature::from_bytes(&sig)).is_ok()
+        })
         .unwrap_or(false);
     if !verified {
         return api_error(StatusCode::FORBIDDEN, "bad_signature", "signature does not match the mailbox key");

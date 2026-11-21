@@ -576,3 +576,25 @@ fn envelope_info_and_bad_json() {
     assert!(matches!(a.encrypt_for(&b.fingerprint_hex(), "not json"), Err(RelayError::Malformed(_))));
     assert!(matches!(a.encrypt_for(&"00".repeat(32), "{}"), Err(RelayError::Unknown(_))));
 }
+
+#[test]
+fn directory_entry_signature_binds_handle_and_card() {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let mut e = engine("ines", 1);
+    let _ = e.my_card(Some("https://relay.example.org".into()), None);
+    let (card_text, sig) = e.sign_directory_entry("ines").unwrap();
+    let card = Card::parse(&card_text).unwrap();
+    assert_eq!(card.body.handle.as_deref(), Some("ines"));
+    assert_eq!(card.body.node_url.as_deref(), Some("https://relay.example.org"));
+
+    let vk = VerifyingKey::from_bytes(&e.device_signing_public().try_into().unwrap()).unwrap();
+    let sig = Signature::from_bytes(&sig.try_into().unwrap());
+    let msg = crate::card::directory_message("ines", card_text.as_bytes());
+    assert!(msg.starts_with(b"soma-relay/directory/v1\x04ines"));
+    assert!(vk.verify(&msg, &sig).is_ok());
+    // Bound to the handle: the same signature does not cover another one.
+    assert!(vk.verify(&crate::card::directory_message("ines2", card_text.as_bytes()), &sig).is_err());
+
+    assert!(matches!(e.sign_directory_entry("IN"), Err(RelayError::Malformed(_))));
+}

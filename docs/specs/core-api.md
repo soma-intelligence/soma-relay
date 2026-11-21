@@ -155,3 +155,10 @@ Behaviour:
 - Frames: `ver(1)=1 || hops_left(1) || id(16) || index(u16 BE) || count(u16 BE) || payload`
   (22-byte header). The frame id is the envelope id and `hops_left` starts at the envelope ttl.
 - wasm size: 772 KiB, 267 KiB gzip (opt-level s, wasm-opt -Oz).
+- Directory: `sign_directory_entry(&mut self, handle) -> Result<(String card, Vec<u8> sig)>` returns
+  the own card carrying `handle` (node URL as last given to `my_card`) and the Ed25519 identity
+  signature over `"soma-relay/directory/v1" || u8 len(handle) || handle || card UTF-8 bytes`, for
+  `PUT /v1/directory/{handle}` (body = card, `X-Relay-Sig` = base64url sig). Handle 3-32 chars
+  `[a-z0-9_.-]`, else `Malformed`. Swift: `signDirectoryEntry(handle:) throws -> DirectoryEntry
+  {card, sig}`; wasm: `signDirectoryEntry(handle) -> string` JSON `{"card","sig_b64"}`. Helper
+  `card::directory_message(handle, card)` builds the signed bytes.

@@ -94,6 +94,15 @@ impl WasmRelayEngine {
         self.inner.borrow().sign_node_challenge(nonce)
     }
 
+    /// Own card carrying `handle` plus its directory signature, as JSON
+    /// `{"card": "relay1:...", "sig_b64": "<base64url>"}`. PUT `card` as the body of
+    /// `/v1/directory/{handle}` with `X-Relay-Sig: sig_b64`.
+    #[wasm_bindgen(js_name = signDirectoryEntry)]
+    pub fn sign_directory_entry(&self, handle: String) -> Result<String, JsValue> {
+        let (card, sig) = self.inner.borrow_mut().sign_directory_entry(&handle).map_err(err)?;
+        Ok(json(&serde_json::json!({"card": card, "sig_b64": core::util::b64url(&sig)})))
+    }
+
     #[wasm_bindgen(js_name = rotatePrekeyIfDue)]
     pub fn rotate_prekey_if_due(&self, now_ms: f64) -> bool {
         self.inner.borrow_mut().rotate_prekey_if_due(now_ms as i64)
