@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { MediaViewer } from './MediaViewer'
 import { relay } from '../state/relay'
 import type { ChatMessage } from '../state/types'
 import { prepareFile, prepareImage, prepareVideo, VoiceRecorder, formatDuration } from '../media/media'
@@ -256,18 +257,7 @@ export function ChatView({
         )}
       </div>
       <Composer convId={convId} replyTo={replyTo} onClearReply={() => setReplyTo(null)} />
-      {lightbox && (
-        <div className="lightbox" role="dialog" aria-label="Aperçu" onClick={() => setLightbox(null)}>
-          {lightbox.kind === 'image' ? (
-            <img src={lightbox.url} alt="" />
-          ) : (
-            <video src={lightbox.url} controls autoPlay playsInline onClick={(e) => e.stopPropagation()} />
-          )}
-          <button className="icon-btn" aria-label="Fermer" onClick={() => setLightbox(null)} autoFocus>
-            <Close />
-          </button>
-        </div>
-      )}
+      {lightbox && <MediaViewer url={lightbox.url} kind={lightbox.kind} onClose={() => setLightbox(null)} />}
     </section>
   )
 }

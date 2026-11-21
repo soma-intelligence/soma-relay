@@ -5,6 +5,8 @@
   --fg: #111418;
   --muted: #5b636e;
   --glass: rgba(255, 255, 255, 0.72);
+  /* Without backdrop-filter the bars must stay readable on their own. */
+  --glass-solid: rgba(248, 250, 252, 0.97);
   --glass-border: rgba(255, 255, 255, 0.9);
   --glass-shadow: 0 8px 24px rgba(17, 20, 24, 0.08);
   --card: rgba(255, 255, 255, 0.6);
@@ -44,7 +46,8 @@
     --bg: #0c0e0d;
     --fg: #e9ece6;
     --muted: #9aa196;
-    --glass: rgba(255, 255, 255, 0.07);
+    --glass: rgba(24, 27, 25, 0.66);
+    --glass-solid: rgba(20, 23, 21, 0.97);
     --glass-border: rgba(255, 255, 255, 0.1);
     --glass-shadow: none;
     --card: rgba(255, 255, 255, 0.04);
@@ -129,11 +132,16 @@ a {
 /* Glass bars and round buttons */
 
 .glass {
-  background: var(--glass);
+  background: var(--glass-solid);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
+}
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    backdrop-filter: blur(20px) saturate(1.4);
+  }
 }
 .bar {
   display: flex;
@@ -586,11 +594,17 @@ a {
   display: flex;
   flex-direction: column;
   border-radius: 22px;
-  border: 1px solid var(--card-border);
-  background: var(--card);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-solid);
+  box-shadow: var(--glass-shadow);
   overflow: hidden;
+}
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .path {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    backdrop-filter: blur(20px) saturate(1.4);
+  }
 }
 .path-toggle {
   display: flex;
@@ -692,13 +706,31 @@ a {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 196px 14px 110px;
+  --fade-top: 196px;
+  padding: var(--fade-top) 14px 110px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* Content dissolves under the floating bars instead of colliding with their text. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--fade-top) - 110px),
+    #000 calc(var(--fade-top) - 24px),
+    #000 calc(100% - 96px),
+    transparent calc(100% - 24px)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--fade-top) - 110px),
+    #000 calc(var(--fade-top) - 24px),
+    #000 calc(100% - 96px),
+    transparent calc(100% - 24px)
+  );
 }
 .messages.with-path-open {
-  padding-top: 272px;
+  --fade-top: 272px;
 }
 .day {
   align-self: center;
@@ -774,13 +806,19 @@ a {
   padding: 8.5px 12.5px;
   box-shadow: none;
 }
-.bubble.media {
-  padding: 4px;
+.bubble.media,
+.msg.out .bubble.media {
+  padding: 0;
   overflow: hidden;
+  border-radius: 18px;
+  background: transparent;
+  box-shadow: none;
+  line-height: 0;
 }
 .msg.out .bubble.media.pending,
 .msg.out .bubble.media.failed {
-  padding: 3px;
+  padding: 2px;
+  border-width: 1px;
 }
 .meta {
   font-family: var(--mono);
@@ -898,7 +936,8 @@ a {
 .photo {
   display: block;
   max-width: 100%;
-  border-radius: 16px;
+  max-height: 360px;
+  border-radius: 18px;
   background: var(--track);
   object-fit: cover;
   cursor: zoom-in;
@@ -1736,10 +1775,29 @@ a {
   justify-content: center;
   animation: fade 0.2s;
 }
+.lightbox-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .lightbox img,
 .lightbox video {
   max-width: 100%;
   max-height: 100%;
+}
+.lightbox img {
+  transform-origin: center;
+  will-change: transform;
+  -webkit-user-drag: none;
+}
+.lightbox .icon-btn {
+  z-index: 1;
 }
 .lightbox .icon-btn {
   position: absolute;

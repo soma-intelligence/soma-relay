@@ -54,11 +54,17 @@ function useMediaUrl(m: ChatMessage, auto: boolean) {
   return { url, error, loading, load }
 }
 
+/** Bubble media size: keeps the aspect ratio inside 280 x 360 px. */
+function fitBox(width: number | undefined, height: number | undefined, fallback: number) {
+  const ratio = width && height ? width / height : fallback
+  const w = Math.round(Math.min(280, 360 * ratio, width ?? 280))
+  return { w: Math.max(w, 80), ratio }
+}
+
 function Photo({ m, onOpen }: { m: ChatMessage; onOpen: (url: string, kind: 'image' | 'video') => void }) {
   const a = m.attachment!
   const { url, loading, error, load } = useMediaUrl(m, true)
-  const ratio = a.width && a.height ? a.width / a.height : 4 / 3
-  const w = Math.min(300, ratio >= 1 ? 300 : 300 * ratio)
+  const { w, ratio } = fitBox(a.width, a.height, 4 / 3)
   const style = { width: w, aspectRatio: String(ratio) }
   if (url)
     return (
@@ -81,8 +87,7 @@ function Photo({ m, onOpen }: { m: ChatMessage; onOpen: (url: string, kind: 'ima
 function VideoThumb({ m, onOpen }: { m: ChatMessage; onOpen: (url: string, kind: 'image' | 'video') => void }) {
   const a = m.attachment!
   const { url, loading, load } = useMediaUrl(m, false)
-  const ratio = a.width && a.height ? a.width / a.height : 16 / 9
-  const w = Math.min(300, ratio >= 1 ? 300 : 300 * ratio)
+  const { w, ratio } = fitBox(a.width, a.height, 16 / 9)
   const open = async () => {
     if (url) return onOpen(url, 'video')
     await load()
