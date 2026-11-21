@@ -1,106 +1,250 @@
 import SwiftUI
 import UIKit
 
-/// One message: optional sender name, the bubble (text, voice, image, video, file), the mono
-/// metadata line, and the SMS fallback for messages with no link.
+/// What a row can ask the chat to do.
+struct RowActions {
+    var reply: (ChatItem) -> Void = { _ in }
+    var react: (String, ChatItem) -> Void = { _, _ in }
+    var moreReactions: (ChatItem) -> Void = { _ in }
+    var forward: (ChatItem) -> Void = { _ in }
+    var edit: (ChatItem) -> Void = { _ in }
+    var deleteForMe: (ChatItem) -> Void = { _ in }
+    var deleteForAll: (ChatItem) -> Void = { _ in }
+    var info: (ChatItem) -> Void = { _ in }
+    var sms: (ChatItem) -> Void = { _ in }
+    var retry: (ChatItem) -> Void = { _ in }
+    var open: (ChatItem) -> Void = { _ in }
+    var openQuote: (String) -> Void = { _ in }
+    var openLink: (URL) -> Void = { _ in }
+    var vote: (String, ChatItem) -> Void = { _, _ in }
+    var closePoll: (ChatItem) -> Void = { _ in }
+    var stopLive: (ChatItem) -> Void = { _ in }
+}
+
+/// One message: sender name (groups), the bubble (text, link card, voice, photo, video,
+/// document, poll, location), reactions, and the mono metadata line under the last bubble of a
+/// run. Long press: reaction palette and actions. Swipe right: reply.
 struct MessageRow: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: ChatItem
+    let position: RunPosition
     let showSender: Bool
     let quoted: ChatItem?
     let player: VoicePlayer
-    let onReply: () -> Void
-    let onSMS: () -> Void
-    let onRetry: () -> Void
-    let onOpen: () -> Void
+    let flashing: Bool
+    let maxWidth: CGFloat
+    let actions: RowActions
 
     @State private var drag: CGFloat = 0
+    @State private var armed = false
     @ScaledMetric(relativeTo: .body) private var textSize: CGFloat = 16
 
+    private static let replyThreshold: CGFloat = 52
     private var alignment: HorizontalAlignment { item.isMine ? .trailing : .leading }
+    private var tw: CGFloat { BubbleShape.tailWidth }
 
     var body: some View {
-        VStack(alignment: alignment, spacing: 4) {
+        VStack(alignment: alignment, spacing: 3) {
             if showSender, let name = item.senderName {
                 Text(name)
                     .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.senderColor(item.sender))
+                    .padding(.leading, 14 + tw)
+            }
+            if item.message.forwarded == true, !item.isDeleted {
+                Label("Transféré", systemImage: "arrowshape.turn.up.right.fill")
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.secondary)
-                    .padding(.leading, 8)
+                    .padding(.horizontal, 10 + tw)
             }
             bubble
-                .offset(x: drag)
-                .gesture(
-                    DragGesture(minimumDistance: 24)
-                        .onChanged { value in
-                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                            let dx = item.isMine ? min(0, value.translation.width) : max(0, value.translation.width)
-                            drag = dx * 0.5
-                        }
-                        .onEnded { _ in
-                            if abs(drag) > 32 {
-                                Haptics.select()
-                                onReply()
-                            }
-                            withAnimation(.snappy) { drag = 0 }
-                        })
+                .contentShape(.contextMenuPreview, contextShape)
                 .contextMenu { menu }
-            MetaText(text: item.meta)
-                .padding(item.isMine ? .trailing : .leading, 8)
-                .padding(.bottom, 6)
-                .accessibilityHidden(true)
-            if item.isMine, item.status == .pending, item.message.attachment == nil {
-                Button(action: onSMS) {
+                .offset(x: drag)
+                .background(alignment: .leading) {
+                    Image(systemName: "arrowshape.turn.up.left.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(armed ? Theme.mesh : Theme.dashed)
+                        .scaleEffect(armed ? 1.1 : 0.8)
+                        .opacity(Double(min(1, drag / Self.replyThreshold)))
+                        .offset(x: item.isMine ? -34 + drag * 0.2 : -30 + drag * 0.4)
+                        .accessibilityHidden(true)
+                }
+                .simultaneousGesture(swipeToReply, isEnabled: !item.isDeleted && !item.isSystem)
+            if !item.state.reactionSummary.isEmpty {
+                ReactionPill(summary: item.state.reactionSummary) { emoji in actions.react(emoji, item) }
+                    .padding(item.isMine ? .trailing : .leading, 10 + tw)
+                    .padding(.top, -12)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.4, anchor: item.isMine ? .topTrailing : .topLeading).combined(with: .opacity))
+                    .zIndex(1)
+            }
+            if position.last || item.status == .failed || item.status == .pending && item.isMine {
+                MetaText(text: item.meta)
+                    .padding(item.isMine ? .trailing : .leading, 8 + tw)
+                    .padding(.top, 1)
+                    .id(item.meta)
+                    .transition(.opacity)
+                    .accessibilityHidden(true)
+            }
+            if item.isMine, item.status == .pending, item.message.attachment == nil, item.message.kind == .text, !item.isDeleted {
+                Button { actions.sms(item) } label: {
                     Label("Envoyer par SMS chiffré", systemImage: "message")
                         .font(.footnote.weight(.medium))
                         .frame(minHeight: 34)
                 }
                 .buttonStyle(.glass)
-                .padding(.bottom, 6)
+                .padding(.vertical, 4)
             } else if item.isMine, item.status == .failed {
-                Button("Réessayer", systemImage: "arrow.clockwise", action: onRetry)
+                Button("Réessayer", systemImage: "arrow.clockwise") { actions.retry(item) }
                     .font(.footnote.weight(.medium))
                     .buttonStyle(.glass)
             }
         }
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.45), value: item.state.reactions)
+        .animation(.easeInOut(duration: 0.3), value: item.meta)
+        .padding(.top, position.first ? 8 : 0)
+        .padding(.bottom, position.last ? 2 : 0)
         .frame(maxWidth: .infinity, alignment: item.isMine ? .trailing : .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityAction(named: "Répondre", onReply)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Theme.mesh.opacity(flashing ? 0.16 : 0))
+                .padding(.horizontal, -6)
+                .animation(.easeOut(duration: flashing ? 0.15 : 0.9), value: flashing)
+        }
+        .accessibilityElement(children: isRich ? .contain : .combine)
+        .accessibilityLabel(isRich ? "" : accessibilityText)
+        .accessibilityActions { accessibilityActionList }
+    }
+
+    private var isRich: Bool { [.poll, .location, .file].contains(item.message.kind) && !item.isDeleted }
+
+    private var contextShape: some Shape {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+    }
+
+    // MARK: Gestures
+
+    private var swipeToReply: some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                let dx = value.translation.width
+                guard dx > 0, abs(dx) > abs(value.translation.height) * 1.4 else { return }
+                let next = min(84, dx * 0.6)
+                if next >= Self.replyThreshold, !armed {
+                    armed = true
+                    Haptics.tap()
+                } else if next < Self.replyThreshold, armed {
+                    armed = false
+                }
+                drag = next
+            }
+            .onEnded { _ in
+                if armed { actions.reply(item) }
+                armed = false
+                withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(duration: 0.3, bounce: 0.3)) { drag = 0 }
+            }
+    }
+
+    // MARK: Menu
+
+    @ViewBuilder private var menu: some View {
+        if !item.isDeleted, !item.isSystem {
+            ControlGroup {
+                ForEach(AppModel.reactionChoices, id: \.self) { emoji in
+                    Button {
+                        actions.react(emoji, item)
+                    } label: {
+                        Image(uiImage: EmojiImage.make(emoji))
+                    }
+                    .accessibilityLabel("Réagir \(emoji)")
+                }
+                Button {
+                    actions.moreReactions(item)
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Autre réaction")
+            }
+            .controlGroupStyle(.palette)
+            Section {
+                Button("Répondre", systemImage: "arrowshape.turn.up.left") { actions.reply(item) }
+                if let text = item.message.text, !text.isEmpty {
+                    Button("Copier", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = text
+                        Haptics.select()
+                    }
+                }
+                if model.canForward(item) {
+                    Button("Transférer", systemImage: "arrowshape.turn.up.right") { actions.forward(item) }
+                }
+                if model.canEdit(item) {
+                    Button("Modifier", systemImage: "pencil") { actions.edit(item) }
+                }
+                Button("Infos", systemImage: "info.circle") { actions.info(item) }
+            }
+        }
+        if item.isMine, item.status == .pending, !item.isDeleted {
+            Button("Envoyer par SMS chiffré", systemImage: "message") { actions.sms(item) }
+        }
+        if item.isMine, item.status == .failed || item.status == .pending {
+            Button("Réessayer", systemImage: "arrow.clockwise") { actions.retry(item) }
+        }
+        Section {
+            Button("Supprimer pour moi", systemImage: "trash", role: .destructive) { actions.deleteForMe(item) }
+            if model.canDeleteForEveryone(item) {
+                Button("Supprimer pour tous", systemImage: "trash.slash", role: .destructive) { actions.deleteForAll(item) }
+            }
+        }
+    }
+
+    @ViewBuilder private var accessibilityActionList: some View {
+        if !item.isDeleted, !item.isSystem {
+            Button("Répondre") { actions.reply(item) }
+            Button("Réagir 👍") { actions.react("👍", item) }
+            Button("Autre réaction") { actions.moreReactions(item) }
+            if model.canForward(item) { Button("Transférer") { actions.forward(item) } }
+            if model.canEdit(item) { Button("Modifier") { actions.edit(item) } }
+            Button("Infos") { actions.info(item) }
+        }
+        Button("Supprimer pour moi") { actions.deleteForMe(item) }
     }
 
     private var accessibilityText: String {
         let who = item.isMine ? "Toi" : (item.senderName ?? model.name(of: item.sender))
-        let body = item.message.kind == .text ? (item.message.text ?? "") : AppModel.previewText(item.message)
+        var body = item.summary
+        if let link = item.message.link { body += ", lien " + (link.title ?? link.site ?? "") }
         let via: String = switch item.transport {
         case .mesh: item.hops.map { "par le mesh, \($0) saut\($0 > 1 ? "s" : "")" } ?? "par le mesh"
         case .node: "par Internet"
         case .sms: "par SMS chiffré"
         case .local: ""
         }
-        return [who + " : " + body, via, item.accessibilityStatus].filter { !$0.isEmpty }.joined(separator: ", ")
-    }
-
-    @ViewBuilder private var menu: some View {
-        Button("Répondre", systemImage: "arrowshape.turn.up.left", action: onReply)
-        if let text = item.message.text {
-            Button("Copier", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
-        }
-        if item.isMine, item.status == .pending {
-            Button("Envoyer par SMS chiffré", systemImage: "message", action: onSMS)
-        }
-        if item.isMine, item.status == .failed || item.status == .pending {
-            Button("Réessayer", systemImage: "arrow.clockwise", action: onRetry)
-        }
+        let reactions = item.state.reactionSummary.map { "\($0.emoji) \($0.count)" }.joined(separator: " ")
+        return [
+            who + " : " + body, item.isEdited ? "modifié" : "", item.message.forwarded == true ? "transféré" : "", item.time, via,
+            item.accessibilityStatus, reactions.isEmpty ? "" : "réactions " + reactions,
+        ].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     // MARK: Bubbles
 
     @ViewBuilder private var bubble: some View {
-        switch item.message.kind {
-        case .audio: voice
-        case .image, .video: media
-        case .file: file
-        default: textBubble
+        if item.isDeleted {
+            deletedBubble
+        } else {
+            switch item.message.kind {
+            case .audio: voice.padding(item.isMine ? .trailing : .leading, tw)
+            case .image, .video: media.padding(item.isMine ? .trailing : .leading, tw)
+            case .file: DocumentBubble(item: item) { actions.open(item) }.padding(item.isMine ? .trailing : .leading, tw)
+            case .poll:
+                PollBubble(item: item, onVote: { actions.vote($0, item) }, onClose: { actions.closePoll(item) })
+                    .padding(item.isMine ? .trailing : .leading, tw)
+            case .location:
+                LocationBubble(item: item, onOpen: { actions.open(item) }, onStop: { actions.stopLive(item) })
+                    .padding(item.isMine ? .trailing : .leading, tw)
+            default: textBubble
+            }
         }
     }
 
@@ -110,40 +254,84 @@ struct MessageRow: View {
         return Theme.bubble(for: item.transport)
     }
 
+    private var shape: BubbleShape { BubbleShape(mine: item.isMine, tail: position.last) }
+
     private var textBubble: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let quoted { quote(quoted) }
-            Text(item.message.text ?? "")
+            Text(Self.linked(item.message.text ?? "", tint: colors.text))
                 .font(.system(size: textSize))
                 .lineSpacing(textSize * 0.35 - 4)
                 .foregroundStyle(colors.text)
-                .textSelection(.enabled)
+                .tint(colors.text)
+                .environment(\.openURL, OpenURLAction { url in
+                    actions.openLink(url)
+                    return .handled
+                })
+            if let link = item.message.link {
+                LinkCard(link: link, tint: colors.text) { actions.openLink($0) }
+                    .frame(minWidth: 200)
+            }
         }
         .padding(.horizontal, item.isInFlight ? 13 : 14)
-        .padding(.vertical, item.isInFlight ? 9 : 10)
+        .padding(.vertical, item.isInFlight ? 8 : 9)
+        .padding(item.isMine ? .trailing : .leading, tw)
         .background(shape.fill(colors.fill))
-        .overlay { if item.isInFlight { shape.strokeBorder(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])) } }
+        .overlay { if item.isInFlight { shape.stroke(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])) } }
         .shadow(color: item.isMine ? .clear : Theme.shadow.opacity(0.75), radius: 1, y: 1)
-        .frame(maxWidth: UIScreen.main.bounds.width * 0.76, alignment: item.isMine ? .trailing : .leading)
+        .frame(maxWidth: maxWidth, alignment: item.isMine ? .trailing : .leading)
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 20, style: .continuous) }
+    private var deletedBubble: some View {
+        Label("Message supprimé", systemImage: "nosign")
+            .font(.system(size: textSize - 1).italic())
+            .foregroundStyle(Theme.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .padding(item.isMine ? .trailing : .leading, tw)
+            .background(shape.stroke(Theme.ring, lineWidth: 1))
+    }
+
+    /// Text with tappable http(s) links.
+    static func linked(_ text: String, tint: Color) -> AttributedString {
+        var out = AttributedString(text)
+        guard text.contains("http") || text.contains("www."),
+            let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return out }
+        for match in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let url = match.url, let r = Range(match.range, in: text), let ar = Range(r, in: out) else { continue }
+            out[ar].link = url
+            out[ar].underlineStyle = .single
+        }
+        return out
+    }
 
     private func quote(_ q: ChatItem) -> some View {
-        HStack(spacing: 8) {
-            Capsule().fill(colors.text.opacity(0.6)).frame(width: 3)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(q.isMine ? "Toi" : (q.senderName ?? model.name(of: q.sender)))
-                    .font(.caption.weight(.semibold))
-                Text(q.message.kind == .text ? (q.message.text ?? "") : AppModel.previewText(q.message))
-                    .font(.caption)
-                    .lineLimit(2)
+        Button {
+            actions.openQuote(q.id)
+        } label: {
+            HStack(spacing: 8) {
+                Capsule().fill(q.isMine ? colors.text.opacity(0.6) : Theme.senderColor(q.sender)).frame(width: 3)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(q.isMine ? "Toi" : (q.senderName ?? model.name(of: q.sender)))
+                        .font(.caption.weight(.semibold))
+                    Text(q.summary)
+                        .font(.caption)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
             }
+            .foregroundStyle(colors.text.opacity(0.85))
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(colors.text.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
         }
-        .foregroundStyle(colors.text.opacity(0.85))
-        .padding(.vertical, 2)
-        .accessibilityLabel("En réponse à : " + (q.message.text ?? AppModel.previewText(q.message)))
+        .buttonStyle(.plain)
+        .accessibilityLabel("En réponse à : " + q.summary)
+        .accessibilityHint("Affiche le message d'origine")
     }
 
     private var voice: some View {
@@ -156,6 +344,7 @@ struct MessageRow: View {
             } label: {
                 Image(systemName: playing ? "pause.fill" : "play.fill")
                     .font(.system(size: 13))
+                    .contentTransition(.symbolEffect(.replace))
                     .frame(width: 36, height: 36)
                     .background(Theme.playFill, in: Circle())
                     .foregroundStyle(Theme.playIcon)
@@ -182,8 +371,8 @@ struct MessageRow: View {
         .padding(.leading, 8)
         .padding(.trailing, 14)
         .padding(.vertical, 8)
-        .frame(width: 230)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(item.isMine && !item.isInFlight ? Theme.incoming : Theme.incoming))
+        .frame(width: 236)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.incoming))
         .overlay { if item.isInFlight { RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])) } }
         .shadow(color: Theme.shadow.opacity(0.75), radius: 1, y: 1)
     }
@@ -193,8 +382,8 @@ struct MessageRow: View {
         let image = item.mediaPath.flatMap(MediaStore.load).flatMap { item.message.kind == .image ? UIImage(data: $0) : nil }
             ?? attachment?.thumb.flatMap { Data(base64Encoded: $0) }.flatMap(UIImage.init(data:))
         let ratio = CGFloat(attachment?.width ?? 4) / CGFloat(max(1, attachment?.height ?? 3))
-        let width: CGFloat = 240
-        return Button(action: onOpen) {
+        let width: CGFloat = min(240, maxWidth)
+        return Button { actions.open(item) } label: {
             ZStack {
                 if let image {
                     Image(uiImage: image).resizable().scaledToFill()
@@ -220,34 +409,6 @@ struct MessageRow: View {
         .buttonStyle(.plain)
         .accessibilityLabel(item.message.kind == .video ? "Vidéo" : "Photo")
         .accessibilityHint("Ouvre en plein écran")
-    }
-
-    private var file: some View {
-        let attachment = item.message.attachment
-        return Button(action: onOpen) {
-            HStack(spacing: 12) {
-                Image(systemName: "doc.fill")
-                    .font(.system(size: 18))
-                    .frame(width: 40, height: 40)
-                    .background(Theme.playFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .foregroundStyle(Theme.playIcon)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(attachment?.name ?? "Fichier")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Theme.text)
-                        .lineLimit(1)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(attachment?.size ?? 0), countStyle: .file))
-                        .font(Theme.mono(11))
-                        .foregroundStyle(Theme.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(10)
-            .frame(width: 240)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Theme.incoming))
-            .overlay { if item.isInFlight { RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])) } }
-        }
-        .buttonStyle(.plain)
     }
 
     static func duration(_ ms: Int) -> String {

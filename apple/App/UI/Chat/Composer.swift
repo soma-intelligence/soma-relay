@@ -2,12 +2,15 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Glass composer: attachments, the text field ("Message chiffré"), and the voice button
-/// (hold to record, slide left to cancel) that turns into Send when there is text.
+/// Glass composer: attachment panel (Photo, Caméra, Document, Position, Sondage), the text
+/// field ("Message chiffré", up to 6 lines) with the link preview it will send, and the round
+/// button that morphs from mic (hold to record, slide left to cancel) to send arrow.
 struct Composer: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let conversationId: String
     @Binding var replyTo: ChatItem?
+    @Binding var editing: ChatItem?
 
     @State private var text = ""
     @State private var recorder = VoiceRecorder()
@@ -16,48 +19,57 @@ struct Composer: View {
     @State private var showPhotos = false
     @State private var showCamera = false
     @State private var showFiles = false
+    @State private var showAttach = false
+    @State private var showPoll = false
+    @State private var showLocation = false
     @State private var working = false
+    @State private var preview: LinkState?
+    @State private var dismissedURL: URL?
     @FocusState private var focused: Bool
 
+    /// The preview being fetched or ready for the URL in the text.
+    struct LinkState: Equatable {
+        var url: URL
+        var link: AppMessage.LinkPreview?
+        var loading: Bool
+    }
+
     private var isChannel: Bool { conversationId.hasPrefix("c:") }
+    private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 8) {
-            if let replyTo {
-                HStack(spacing: 10) {
-                    Capsule().fill(Theme.mesh).frame(width: 3, height: 30)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Réponse à \(replyTo.isMine ? "toi" : (replyTo.senderName ?? model.name(of: replyTo.sender)))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(Theme.text)
-                        Text(replyTo.message.text ?? AppModel.previewText(replyTo.message))
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Button {
-                        withAnimation(.snappy) { self.replyTo = nil }
-                    } label: {
-                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).roundIcon(size: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Annuler la réponse")
+            if showAttach {
+                attachPanel
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity))
+            }
+            if let editing {
+                contextBar(icon: "pencil", title: "Modifier le message", detail: editing.message.text ?? "") {
+                    withAnimation(.snappy) { self.editing = nil }
+                    text = ""
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let replyTo {
+                contextBar(
+                    icon: "arrowshape.turn.up.left.fill",
+                    title: "Réponse à \(replyTo.isMine ? "toi" : (replyTo.senderName ?? model.name(of: replyTo.sender)))",
+                    detail: replyTo.summary
+                ) {
+                    withAnimation(.snappy) { self.replyTo = nil }
+                }
+            }
+            if let preview, editing == nil {
+                linkBar(preview)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if recorder.recording {
                     recordingStrip
                 } else {
-                    attachMenu
-                    TextField("Message chiffré", text: $text, axis: .vertical)
+                    attachButton
+                    TextField(editing != nil ? "Message modifié" : "Message chiffré", text: $text, axis: .vertical)
                         .font(.system(size: 16))
                         .foregroundStyle(Theme.text)
-                        .lineLimit(1...5)
+                        .lineLimit(1...6)
                         .focused($focused)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 11)
@@ -65,15 +77,25 @@ struct Composer: View {
                         .onChange(of: text) { _, new in
                             if !new.isEmpty { model.userIsTyping(in: conversationId) }
                         }
-                        .accessibilityLabel("Message")
+                        .task(id: text) { await refreshPreview() }
+                        .accessibilityLabel(editing != nil ? "Message modifié" : "Message")
                 }
                 trailingButton
             }
             .glassBar()
         }
         .animation(.snappy(duration: 0.25), value: replyTo?.id)
+        .animation(.snappy(duration: 0.25), value: editing?.id)
+        .animation(.snappy(duration: 0.25), value: preview)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.32, bounce: 0.25), value: showAttach)
         .animation(.snappy(duration: 0.2), value: recorder.recording)
-        .animation(.snappy(duration: 0.2), value: text.isEmpty)
+        .onChange(of: editing?.id) { _, id in
+            guard id != nil, let editing else { return }
+            text = editing.message.text ?? ""
+            focused = true
+        }
+        .onChange(of: replyTo?.id) { _, id in if id != nil { focused = true } }
+        .onChange(of: focused) { _, f in if f { showAttach = false } }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .any(of: [.images, .videos]))
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
@@ -91,48 +113,225 @@ struct Composer: View {
             guard case .success(let url) = result else { return }
             Task { await sendFile(url) }
         }
+        .sheet(isPresented: $showPoll) {
+            PollComposer(onSend: { q, options, multi in
+                model.sendPoll(question: q, options: options, multi: multi, in: conversationId)
+            }, demo: DemoData.screen == "poll-new")
+        }
+        .sheet(isPresented: $showLocation) {
+            LocationSheet { lat, lon, accuracy, live in
+                model.sendLocation(lat: lat, lon: lon, accuracy: accuracy, live: live, in: conversationId)
+            }
+        }
+        .onAppear {
+            switch DemoData.screen {
+            case "attach": showAttach = true
+            case "poll-new": showPoll = true
+            case "location": showLocation = true
+            case "edit":
+                if let mine = model.items(in: conversationId).last(where: { model.canEdit($0) }) { editing = mine }
+            default: break
+            }
+        }
     }
 
-    private var attachMenu: some View {
-        Menu {
-            Button("Photo ou vidéo", systemImage: "photo.on.rectangle") { showPhotos = true }
-            Button("Caméra", systemImage: "camera") { showCamera = true }
-                .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
-            Button("Fichier", systemImage: "doc") { showFiles = true }
+    // MARK: Attachments panel
+
+    private var attachButton: some View {
+        Button {
+            Haptics.select()
+            focused = false
+            showAttach.toggle()
         } label: {
             Group {
                 if working {
                     ProgressView()
                 } else {
-                    Image(systemName: "plus").font(.system(size: 19, weight: .semibold))
+                    Image(systemName: "plus")
+                        .font(.system(size: 19, weight: .semibold))
+                        .rotationEffect(.degrees(showAttach ? 45 : 0))
                 }
             }
             .roundIcon()
         }
-        .disabled(isChannel || working)
-        .accessibilityLabel("Joindre")
+        .buttonStyle(.plain)
+        .disabled(working || editing != nil)
+        .accessibilityLabel(showAttach ? "Fermer les pièces jointes" : "Joindre")
     }
 
-    @ViewBuilder private var trailingButton: some View {
-        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 18, weight: .bold))
-                    .roundIcon(fill: Theme.strong, foreground: Theme.onStrong)
+    private struct AttachOption: Identifiable {
+        let id: String
+        let title: String
+        let icon: String
+        let tint: Color
+        let mediaOnly: Bool
+    }
+
+    private var attachOptions: [AttachOption] {
+        [
+            AttachOption(id: "photo", title: "Photo", icon: "photo.on.rectangle.angled", tint: Theme.net, mediaOnly: true),
+            AttachOption(id: "camera", title: "Caméra", icon: "camera.fill", tint: Color(UIColor(hex: 0x5B636E, alpha: 1)), mediaOnly: true),
+            AttachOption(id: "document", title: "Document", icon: "doc.fill", tint: Color(UIColor(hex: 0x2B6CDF, alpha: 1)), mediaOnly: true),
+            AttachOption(id: "location", title: "Position", icon: "location.fill", tint: Color(UIColor(hex: 0x1E9E5A, alpha: 1)), mediaOnly: false),
+            AttachOption(id: "poll", title: "Sondage", icon: "chart.bar.fill", tint: Color(UIColor(hex: 0xE8772E, alpha: 1)), mediaOnly: false),
+        ]
+    }
+
+    private var attachPanel: some View {
+        VStack(spacing: 2) {
+            ForEach(attachOptions) { option in
+                let disabled = (isChannel && option.mediaOnly) || (option.id == "camera" && !UIImagePickerController.isSourceTypeAvailable(.camera) && !model.demo)
+                Button {
+                    pick(option.id)
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: option.icon)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 38, height: 38)
+                            .background(option.tint, in: Circle())
+                        Text(option.title)
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(Theme.text)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(disabled)
+                .opacity(disabled ? 0.4 : 1)
+            }
+        }
+        .padding(8)
+        .frame(width: 230)
+        .glassEffect(.regular.tint(Theme.glassFill), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(Theme.glassStroke, lineWidth: 1) }
+        .shadow(color: Theme.shadow, radius: 16, y: 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func pick(_ id: String) {
+        showAttach = false
+        Haptics.tap()
+        switch id {
+        case "photo": showPhotos = true
+        case "camera": showCamera = true
+        case "document": showFiles = true
+        case "location": showLocation = true
+        case "poll": showPoll = true
+        default: break
+        }
+    }
+
+    // MARK: Context bars
+
+    private func contextBar(icon: String, title: String, detail: String, close: @escaping () -> Void) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.mesh)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(action: close) {
+                Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).roundIcon(size: 32)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Envoyer")
-            .transition(.scale(scale: 0.8).combined(with: .opacity))
-        } else {
-            Image(systemName: recorder.recording ? "waveform" : "mic.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .roundIcon(fill: recorder.recording ? Theme.danger : Theme.strong, foreground: recorder.recording ? .white : Theme.onStrong)
-                .scaleEffect(recorder.recording ? 1.12 : 1)
-                .opacity(isChannel ? 0.4 : 1)
-                .gesture(isChannel ? nil : holdToRecord)
-                .accessibilityLabel("Note vocale")
-                .accessibilityHint("Maintiens pour enregistrer, relâche pour envoyer")
-                .accessibilityAction(named: "Enregistrer 10 secondes") { Task { await recordForVoiceOver() } }
+            .accessibilityLabel("Annuler")
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func linkBar(_ state: LinkState) -> some View {
+        HStack(spacing: 10) {
+            Group {
+                if let b64 = state.link?.image, let data = Data(base64Encoded: b64), let image = UIImage(data: data) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "link").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.secondary)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .background(Theme.softButton)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(state.loading ? "Aperçu du lien…" : (state.link?.title ?? state.url.host() ?? ""))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                Text(state.link?.site ?? state.url.host() ?? "")
+                    .font(Theme.mono(10))
+                    .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if state.loading { ProgressView().controlSize(.small) }
+            Button {
+                dismissedURL = state.url
+                withAnimation(.snappy) { preview = nil }
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).roundIcon(size: 32)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Envoyer sans aperçu")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// Debounced: the preview of the first http(s) URL, while the user types.
+    private func refreshPreview() async {
+        guard model.linkPreviews, !isChannel, editing == nil else {
+            preview = nil
+            return
+        }
+        guard let url = LinkPreviewer.firstURL(in: text), url != dismissedURL else {
+            if preview != nil { preview = nil }
+            return
+        }
+        if preview?.url == url { return }
+        try? await Task.sleep(for: .milliseconds(450))
+        guard !Task.isCancelled else { return }
+        preview = LinkState(url: url, link: nil, loading: true)
+        let link = await LinkPreviewer.fetch(url)
+        guard preview?.url == url else { return }
+        preview = link.map { LinkState(url: url, link: $0, loading: false) }
+    }
+
+    // MARK: Send button
+
+    private var trailingButton: some View {
+        let showSend = hasText || editing != nil
+        return Image(systemName: recorder.recording ? "waveform" : showSend ? (editing != nil ? "checkmark" : "arrow.up") : "mic.fill")
+            .font(.system(size: 18, weight: showSend ? .bold : .semibold))
+            .contentTransition(.symbolEffect(.replace.downUp))
+            .roundIcon(fill: recorder.recording ? Theme.danger : Theme.strong, foreground: recorder.recording ? .white : Theme.onStrong)
+            .scaleEffect(recorder.recording ? 1.12 : 1)
+            .opacity(!showSend && isChannel ? 0.4 : 1)
+            .gesture(showSend ? nil : (isChannel ? nil : holdToRecord))
+            .onTapGesture { if showSend { send() } }
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(showSend ? (editing != nil ? "Enregistrer la modification" : "Envoyer") : "Note vocale")
+            .accessibilityHint(showSend ? "" : "Maintiens pour enregistrer, relâche pour envoyer")
+            .accessibilityAction {
+                if showSend { send() }
+            }
+            .accessibilityAction(named: "Enregistrer 10 secondes") { Task { await recordForVoiceOver() } }
     }
 
     private var holdToRecord: some Gesture {
@@ -198,9 +397,30 @@ struct Composer: View {
 
     private func send() {
         let body = text
+        if let editing {
+            model.edit(editing, text: body)
+            text = ""
+            withAnimation(.snappy) { self.editing = nil }
+            Haptics.success()
+            return
+        }
+        guard hasText else { return }
         text = ""
-        model.send(text: body, in: conversationId, replyTo: replyTo?.id)
+        let reply = replyTo?.id
         withAnimation(.snappy) { replyTo = nil }
+        let pending = preview
+        preview = nil
+        dismissedURL = nil
+        if let pending, pending.loading, LinkPreviewer.firstURL(in: body) == pending.url {
+            // Wait for the preview (5 s at most, LPMetadataProvider timeout), then send.
+            Task {
+                let link = await LinkPreviewer.fetch(pending.url)
+                model.send(text: body, in: conversationId, replyTo: reply, link: link)
+            }
+            return
+        }
+        let link = pending.flatMap { LinkPreviewer.firstURL(in: body) == $0.url ? $0.link : nil }
+        model.send(text: body, in: conversationId, replyTo: reply, link: link)
     }
 
     // MARK: Attachments
@@ -251,7 +471,12 @@ struct Composer: View {
             model.banner = "Fichier illisible ou plus lourd que 100 Mo."
             return
         }
-        await model.sendAttachment(data, kind: .file, mime: MediaEncoder.mime(for: url), name: url.lastPathComponent, in: conversationId)
+        let mime = MediaEncoder.mime(for: url)
+        let isPDF = mime == "application/pdf" || url.pathExtension.lowercased() == "pdf"
+        let pages = isPDF ? DocumentInfo.pdfPages(data) : nil
+        var thumb = isPDF ? DocumentInfo.pdfThumbnail(data) : nil
+        if thumb == nil { thumb = await DocumentInfo.thumbnail(for: url) }
+        await model.sendAttachment(data, kind: .file, mime: mime, name: url.lastPathComponent, thumb: thumb, pages: pages, in: conversationId)
     }
 
     private func fail() {
