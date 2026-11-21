@@ -1,5 +1,6 @@
-//! Bots talking through a real relay-node. The engine here is a test double that does NOT
-//! encrypt: it only exercises the REST API, the node client, card lookup and the webhook.
+//! Bots talking through a real relay-node. `PlainEngine` is a test double that does NOT
+//! encrypt: it exercises the REST API, the node client, card lookup and the webhook. The
+//! last test runs the real relay-core engine end to end.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -132,6 +133,16 @@ struct TestBot {
 }
 
 async fn start_bot(node: SocketAddr, dir: &std::path::Path, name: &str, seed: u8, webhook: Option<String>) -> TestBot {
+    start_bot_with(node, dir, name, Arc::new(PlainEngine::new(name, seed)), webhook).await
+}
+
+async fn start_bot_with(
+    node: SocketAddr,
+    dir: &std::path::Path,
+    name: &str,
+    engine: Arc<dyn Engine>,
+    webhook: Option<String>,
+) -> TestBot {
     let token = format!("token-{name}-0123456789abcdef0123456789abcdef");
     let settings = Settings {
         node_url: format!("http://{node}").parse().unwrap(),
@@ -139,7 +150,7 @@ async fn start_bot(node: SocketAddr, dir: &std::path::Path, name: &str, seed: u8
         webhook: webhook.map(|w| w.parse().unwrap()),
         token: token.clone(),
     };
-    let (bot, outbox) = Bot::new(Arc::new(PlainEngine::new(name, seed)), settings, Inbox::memory());
+    let (bot, outbox) = Bot::new(engine, settings, Inbox::memory());
     tokio::spawn(node::run(bot.clone(), outbox));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api = format!("http://{}", listener.local_addr().unwrap());
@@ -302,4 +313,48 @@ async fn offline_bot_gets_messages_on_connect() {
     let b = start_bot(node, dir.path(), "bravo", 12, None).await;
     let msgs = wait_messages(&http, &b, 0, 1).await;
     assert_eq!(msgs[0]["message"]["text"], "while you were away");
+}
+
+#[tokio::test]
+async fn core_engines_exchange_encrypted_messages() {
+    use relay_bot::engine::CoreEngine;
+
+    let dir = tempfile::tempdir().unwrap();
+    let node = start_node(dir.path()).await;
+    let a = start_bot_with(node, dir.path(), "ada", Arc::new(CoreEngine::create("ada")), None).await;
+    let b = start_bot_with(node, dir.path(), "bob", Arc::new(CoreEngine::create("bob")), None).await;
+    let http = reqwest::Client::new();
+
+    // Ada only knows Bob's compact link: the full card comes from the node and is verified.
+    let card: Value = http.get(format!("{}/v1/card", b.api)).send().await.unwrap().json().await.unwrap();
+    let link = card["link"].as_str().unwrap();
+    assert!(link.starts_with("relay1c:"));
+    let r = http
+        .post(format!("{}/v1/messages", a.api))
+        .bearer_auth(&a.token)
+        .json(&json!({"to": link, "text": "post-quantum hello"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let msgs = wait_messages(&http, &b, 0, 1).await;
+    assert_eq!(msgs[0]["message"]["text"], "post-quantum hello");
+    assert_eq!(msgs[0]["from"], a.bot.engine.fingerprint_hex());
+
+    // Bob answers by fingerprint over the session Ada opened.
+    let r = http
+        .post(format!("{}/v1/messages", b.api))
+        .bearer_auth(&b.token)
+        .json(&json!({"to": a.bot.engine.fingerprint_hex(), "text": "loud and clear"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let back = wait_messages(&http, &a, 0, 1).await;
+    assert_eq!(back[0]["message"]["text"], "loud and clear");
+
+    // State survives a restore.
+    let restored = CoreEngine::restore(&a.bot.engine.export_state()).unwrap();
+    assert_eq!(restored.fingerprint_hex(), a.bot.engine.fingerprint_hex());
+    assert_eq!(restored.contacts().len(), 1);
 }
