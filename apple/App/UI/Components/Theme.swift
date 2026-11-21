@@ -3,7 +3,8 @@ import UIKit
 
 /// Direction E ("Verre + Radar") tokens, copied from the Fusion artboards (light and dark).
 enum Theme {
-    static func dyn(_ light: UInt32, _ dark: UInt32, lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> Color {
+    /// Nonisolated: SwiftUI resolves these colors on its async render thread too.
+    nonisolated static func dyn(_ light: UInt32, _ dark: UInt32, lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> Color {
         Color(UIColor { traits in
             traits.userInterfaceStyle == .dark ? UIColor(hex: dark, alpha: darkAlpha) : UIColor(hex: light, alpha: lightAlpha)
         })
