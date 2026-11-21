@@ -191,3 +191,78 @@ export const Smile = ({ size = 18, ...r }: P) => (
     <path d="M8.5 14.5a4.5 4.5 0 007 0M9 9.5v.01M15 9.5v.01" />
   </svg>
 )
+export const Poll = ({ size = 20, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M5 20V10M12 20V4M19 20v-7" />
+  </svg>
+)
+export const Pin = ({ size = 20, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M12 21s-7-6.2-7-11.5A7 7 0 0119 9.5C19 14.8 12 21 12 21z" />
+    <circle cx="12" cy="9.5" r="2.5" />
+  </svg>
+)
+export const Forward = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M14 5l7 7-7 7M21 12H9a6 6 0 00-6 6v1" />
+  </svg>
+)
+export const Pencil = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M4 20h4L19 9a2.8 2.8 0 00-4-4L4 16z" />
+  </svg>
+)
+export const Info = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v6M12 7.5v.5" />
+  </svg>
+)
+export const Timer = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <circle cx="12" cy="13" r="8" />
+    <path d="M12 9v4l2.5 2M9 2h6" />
+  </svg>
+)
+export const Bell = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M6 16V11a6 6 0 0112 0v5l2 2H4zM10 21h4" />
+  </svg>
+)
+export const BellOff = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M6 16V11a6 6 0 0110.5-4M18 11v5l2 2H4M10 21h4M3 3l18 18" />
+  </svg>
+)
+export const ArrowDown = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M12 5v14M6 13l6 6 6-6" />
+  </svg>
+)
+export const ChevronUp = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M6 15l6-6 6 6" />
+  </svg>
+)
+export const ChevronDown = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+)
+export const External = ({ size = 16, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" />
+  </svg>
+)
+export const ZoomIn = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M11 8v6M8 11h6M20 20l-4-4" />
+  </svg>
+)
+export const ZoomOut = ({ size = 18, ...r }: P) => (
+  <svg {...base(size, r)}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M8 11h6M20 20l-4-4" />
+  </svg>
+)

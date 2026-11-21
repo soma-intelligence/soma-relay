@@ -1,10 +1,12 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
 import { relay } from '../state/relay'
 import type { ChatMessage } from '../state/types'
 import { formatDuration, formatSize } from '../media/media'
-import { Download, File, Pause, Phone, Play, Reply, Smile, Video } from './Icons'
+import { File, Pause, Phone, Play, Reply, Timer, Video } from './Icons'
+import { RichText } from './RichText'
+import { LinkCard, LocationBubble, PollBubble } from './Rich'
 
-const REACTIONS = ['❤️', '👍', '😂', '😮', '🙏']
+export type RunPos = 'single' | 'first' | 'mid' | 'last'
 
 function transportClass(m: ChatMessage): string {
   if (m.from !== 'me') return ''
@@ -13,22 +15,28 @@ function transportClass(m: ChatMessage): string {
   return m.transport ?? 'net'
 }
 
-export function metaLine(m: ChatMessage, isGroup: boolean): string {
+export function statusWord(m: ChatMessage, isGroup: boolean): string {
+  switch (m.status) {
+    case 'pending':
+      return 'EN ROUTE'
+    case 'failed':
+      return 'ÉCHEC'
+    case 'sent':
+      return 'ENVOYÉ'
+    case 'delivered':
+      return isGroup ? 'ENVOYÉ' : 'REÇU'
+    case 'read':
+      return 'LU'
+  }
+}
+
+export function metaLine(m: ChatMessage): string {
   const time = new Date(m.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
   const t = m.transport === 'p2p' ? 'P2P' : m.transport === 'local' ? 'LOCAL' : 'NET'
   if (m.from !== 'me') return `${t} · ${time}`
-  switch (m.status) {
-    case 'pending':
-      return `EN ROUTE · en file d’attente · ${time}`
-    case 'failed':
-      return `ÉCHEC · ${time}`
-    case 'sent':
-      return `${t} · ENVOYÉ · ${time}`
-    case 'delivered':
-      return `${t} · ${isGroup ? 'ENVOYÉ' : 'REÇU'} · ${time}`
-    case 'read':
-      return `${t} · LU · ${time}`
-  }
+  if (m.status === 'pending') return `en file d’attente · ${time}`
+  if (m.status === 'failed') return time
+  return `${t} · ${time}`
 }
 
 function useMediaUrl(m: ChatMessage, auto: boolean) {
@@ -192,63 +200,124 @@ function Voice({ m }: { m: ChatMessage }) {
   )
 }
 
-function FileCard({ m }: { m: ChatMessage }) {
+/** Kind of document viewer for an attachment (the viewer itself is loaded on demand). */
+export function docType(name: string | undefined, mime: string): 'pdf' | 'word' | 'sheet' | 'slides' | 'text' | 'image' | 'media' | 'other' {
+  const ext = (name ?? '').toLowerCase().split('.').pop() ?? ''
+  if (mime === 'application/pdf' || ext === 'pdf') return 'pdf'
+  if (ext === 'docx' || mime.includes('wordprocessingml')) return 'word'
+  if (['xlsx', 'xls', 'ods', 'csv', 'tsv'].includes(ext) || mime.includes('spreadsheetml') || mime === 'text/csv') return 'sheet'
+  if (['pptx', 'ppt', 'key', 'odp'].includes(ext) || mime.includes('presentationml')) return 'slides'
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) return 'media'
+  if (
+    mime.startsWith('text/') ||
+    /json|xml|javascript|typescript|x-sh|yaml|toml/.test(mime) ||
+    ['txt', 'md', 'log', 'json', 'xml', 'yml', 'yaml', 'toml', 'ini', 'js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'swift', 'go', 'c', 'h', 'cpp', 'java', 'kt', 'rb', 'sh', 'css', 'html', 'sql'].includes(ext)
+  )
+    return 'text'
+  return 'other'
+}
+
+const DOC_LABEL: Record<string, string> = { pdf: 'PDF', word: 'WORD', sheet: 'TABLEUR', slides: 'PRÉSENTATION', text: 'TEXTE' }
+
+function FileCard({ m, onOpen }: { m: ChatMessage; onOpen: (m: ChatMessage) => void }) {
   const a = m.attachment!
-  const [busy, setBusy] = useState(false)
-  const save = async () => {
-    setBusy(true)
-    try {
-      const url = await relay.mediaUrl(m)
-      if (!url) return
-      const link = document.createElement('a')
-      link.href = url
-      link.download = a.name ?? 'fichier'
-      link.click()
-    } catch (e) {
-      relay.toast(e instanceof Error ? e.message : 'Téléchargement impossible.')
-    } finally {
-      setBusy(false)
-    }
-  }
+  const kind = docType(a.name, a.mime)
+  const ext = (a.name ?? '').split('.').pop()?.toUpperCase()
+  const label = DOC_LABEL[kind] ?? (ext && ext.length <= 5 ? ext : (a.mime.split('/')[1]?.toUpperCase() ?? 'FICHIER'))
   return (
-    <button className={`file-card ${transportClass(m)}`} onClick={() => void save()} aria-label={`Télécharger ${a.name ?? 'le fichier'}`}>
-      <span className="ico">{busy ? <span className="spinner" /> : <File />}</span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span className="fname">{a.name ?? 'Fichier'}</span>
-        <span className="fsize" style={{ display: 'block' }}>
-          {formatSize(a.size)} · {a.mime.split('/')[1]?.toUpperCase() ?? 'FICHIER'}
+    <button className={`file-card ${transportClass(m)}${a.thumb ? ' has-thumb' : ''}`} onClick={() => onOpen(m)} aria-label={`Ouvrir ${a.name ?? 'le fichier'}`}>
+      {a.thumb && (
+        <span className="doc-thumb">
+          <img src={`data:image/jpeg;base64,${a.thumb}`} alt="" style={a.width && a.height ? { aspectRatio: `${a.width} / ${a.height}` } : undefined} />
+        </span>
+      )}
+      <span className="file-row">
+        <span className={`ico doc-${kind}`}>
+          <File />
+        </span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span className="fname">{a.name ?? 'Fichier'}</span>
+          <span className="fsize" style={{ display: 'block' }}>
+            {label} · {formatSize(a.size)}
+            {a.pages ? ` · ${a.pages} page${a.pages > 1 ? 's' : ''}` : ''}
+          </span>
         </span>
       </span>
-      <Download />
     </button>
   )
+}
+
+export interface MessageHandlers {
+  onMenu: (m: ChatMessage, x: number, y: number) => void
+  onReply: (m: ChatMessage) => void
+  onOpenMedia: (url: string, kind: 'image' | 'video') => void
+  onOpenDoc: (m: ChatMessage) => void
+  onOpenMap: (m: ChatMessage) => void
+  onJump: (id: string) => void
+  nameOf: (fp: string) => string
+}
+
+const SWIPE_MAX = 84
+const SWIPE_FIRE = 56
+
+function quoteText(q: ChatMessage): string {
+  if (q.deleted) return 'Message supprimé'
+  switch (q.kind) {
+    case 'image':
+      return 'Photo'
+    case 'video':
+      return 'Vidéo'
+    case 'audio':
+      return 'Note vocale'
+    case 'file':
+      return q.attachment?.name ?? 'Document'
+    case 'poll':
+      return `Sondage : ${q.poll?.question ?? ''}`
+    case 'location':
+      return 'Position'
+    default:
+      return q.text ?? ''
+  }
 }
 
 export const MessageItem = memo(function MessageItem({
   m,
   quoted,
   senderName,
+  senderColor,
   isGroup,
-  active,
-  onActivate,
-  onReply,
-  onOpenMedia,
+  pos,
+  showMeta,
+  fresh,
+  flash,
+  highlight,
+  mentionNames,
+  h,
 }: {
   m: ChatMessage
   quoted?: ChatMessage
   senderName?: string
+  senderColor?: string
   isGroup: boolean
-  active: boolean
-  onActivate: (id: string | null) => void
-  onReply: (m: ChatMessage) => void
-  onOpenMedia: (url: string, kind: 'image' | 'video') => void
+  pos: RunPos
+  showMeta: boolean
+  fresh: boolean
+  flash: boolean
+  highlight?: string
+  mentionNames: string[]
+  h: MessageHandlers
 }) {
-  if (m.kind === 'system') return <div className="system">{m.text}</div>
+  const row = useRef<HTMLDivElement>(null)
+  const swipe = useRef<{ id: number; x: number; y: number; dx: number; on: boolean; fired: boolean; timer: ReturnType<typeof setTimeout> | null } | null>(null)
+  const [dragX, setDragX] = useState(0)
+
+  if (m.kind === 'system') return <div className="system" data-id={m.id}>{m.text}</div>
   const out = m.from === 'me'
   if (m.kind === 'call') {
     const missed = m.call?.outcome === 'missed' && !out
     return (
-      <div className={`msg ${out ? 'out' : 'in'}`}>
+      <div className={`msg ${out ? 'out' : 'in'} pos-single`} data-id={m.id}>
         <div className={`call-log${missed ? ' missed' : ''}`}>
           {m.call?.video ? <Video /> : <Phone />}
           <span>
@@ -262,97 +331,190 @@ export const MessageItem = memo(function MessageItem({
       </div>
     )
   }
+
   const tc = transportClass(m)
   const reactions = Object.entries(m.reactions ?? {})
+  const quote = quoted ? (
+    <button
+      className="reply-quote"
+      onClick={(e) => {
+        e.stopPropagation()
+        h.onJump(quoted.id)
+      }}
+      aria-label={`Aller au message cité : ${quoteText(quoted)}`}
+    >
+      <b>{quoted.from === 'me' ? 'Toi' : h.nameOf(quoted.from)}</b>
+      <span>{quoteText(quoted)}</span>
+    </button>
+  ) : null
+  const fwd = m.forwarded ? <div className="fwd">Transféré</div> : null
+
   let body: React.ReactNode
-  switch (m.kind) {
-    case 'image':
-      body = (
-        <div className={`bubble media ${tc}`}>
-          <Photo m={m} onOpen={onOpenMedia} />
-        </div>
-      )
-      break
-    case 'video':
-      body = (
-        <div className={`bubble media ${tc}`}>
-          <VideoThumb m={m} onOpen={onOpenMedia} />
-        </div>
-      )
-      break
-    case 'audio':
-      body = <Voice m={m} />
-      break
-    case 'file':
-      body = <FileCard m={m} />
-      break
-    default:
-      body = (
-        <div className={`bubble ${tc}`}>
-          {quoted && <div className="reply-quote">{quoted.text ?? (quoted.kind === 'image' ? 'Photo' : 'Pièce jointe')}</div>}
-          {m.text}
-        </div>
-      )
+  if (m.deleted) {
+    body = <div className="bubble deleted">Message supprimé</div>
+  } else
+    switch (m.kind) {
+      case 'image':
+        body = (
+          <div className={`bubble media ${tc}`}>
+            <Photo m={m} onOpen={h.onOpenMedia} />
+          </div>
+        )
+        break
+      case 'video':
+        body = (
+          <div className={`bubble media ${tc}`}>
+            <VideoThumb m={m} onOpen={h.onOpenMedia} />
+          </div>
+        )
+        break
+      case 'audio':
+        body = <Voice m={m} />
+        break
+      case 'file':
+        body = <FileCard m={m} onOpen={h.onOpenDoc} />
+        break
+      case 'poll':
+        body = (
+          <div className={`bubble card ${tc}`}>
+            <PollBubble m={m} isGroup={isGroup} nameOf={h.nameOf} />
+          </div>
+        )
+        break
+      case 'location':
+        body = (
+          <div className={`bubble card ${tc}`}>
+            <LocationBubble m={m} onOpen={() => h.onOpenMap(m)} />
+          </div>
+        )
+        break
+      default:
+        body = (
+          <div className={`bubble ${tc}${m.link ? ' with-link' : ''}`}>
+            {fwd}
+            {quote}
+            <RichText text={m.text ?? ''} names={mentionNames} highlight={highlight} />
+            {m.link && <LinkCard link={m.link} />}
+          </div>
+        )
+    }
+  const textLike = m.kind === 'text' || m.deleted
+
+  // Long press (touch) opens the menu; a horizontal drag to the right replies.
+  const onDown = (e: RPointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' || m.deleted) return
+    const s = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, on: false, fired: false, timer: null as ReturnType<typeof setTimeout> | null }
+    s.timer = setTimeout(() => {
+      if (!s.on) {
+        navigator.vibrate?.(10)
+        h.onMenu(m, s.x, s.y)
+        swipe.current = null
+      }
+    }, 450)
+    swipe.current = s
   }
+  const onMove = (e: RPointerEvent<HTMLDivElement>) => {
+    const s = swipe.current
+    if (!s || s.id !== e.pointerId) return
+    const dx = e.clientX - s.x
+    const dy = e.clientY - s.y
+    if (!s.on && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      if (s.timer) clearTimeout(s.timer)
+      if (dx > 10 && Math.abs(dx) > Math.abs(dy) * 1.5) s.on = true
+      else {
+        swipe.current = null
+        return
+      }
+    }
+    if (!s.on) return
+    s.dx = Math.max(0, Math.min(SWIPE_MAX, dx * 0.8))
+    if (!s.fired && s.dx >= SWIPE_FIRE) {
+      s.fired = true
+      navigator.vibrate?.(8)
+    } else if (s.fired && s.dx < SWIPE_FIRE) s.fired = false
+    setDragX(s.dx)
+  }
+  const onUp = () => {
+    const s = swipe.current
+    swipe.current = null
+    if (!s) return
+    if (s.timer) clearTimeout(s.timer)
+    if (s.on && s.dx >= SWIPE_FIRE) h.onReply(m)
+    setDragX(0)
+  }
+
+  const label = `${out ? 'Toi' : (senderName ?? 'Message')}, ${new Date(m.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
   return (
     <div
-      className={`msg ${out ? 'out' : 'in'}`}
+      ref={row}
+      className={`msg ${out ? 'out' : 'in'} pos-${pos}${fresh ? ' fresh' : ''}${flash ? ' flash' : ''}`}
       onContextMenu={(e) => {
+        if ((e.target as HTMLElement).closest('a')) return
         e.preventDefault()
-        onActivate(active ? null : m.id)
+        if (!m.deleted || out) h.onMenu(m, e.clientX, e.clientY)
       }}
-      onDoubleClick={() => onActivate(active ? null : m.id)}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+      onPointerCancel={onUp}
       data-id={m.id}
+      aria-label={label}
+      role="article"
     >
-      {isGroup && !out && senderName && <div className="sender">{senderName}</div>}
-      {active && (
-        <div className="msg-actions glass" role="toolbar" aria-label="Actions du message">
-          {REACTIONS.map((r) => (
-            <button
-              key={r}
-              aria-label={`Réagir ${r}`}
-              onClick={() => {
-                void relay.react(m.convId, m.id, r)
-                onActivate(null)
-              }}
-            >
-              {r}
-            </button>
-          ))}
-          <button
-            aria-label="Répondre"
-            onClick={() => {
-              onReply(m)
-              onActivate(null)
-            }}
-          >
-            <Reply />
-          </button>
+      {isGroup && !out && senderName && (pos === 'first' || pos === 'single') && (
+        <div className="sender" style={{ color: senderColor }}>
+          {senderName}
         </div>
       )}
-      {body}
+      <div className="swipe-hint" aria-hidden="true" style={{ opacity: Math.min(1, dragX / SWIPE_FIRE), transform: `scale(${dragX >= SWIPE_FIRE ? 1 : 0.7})` }}>
+        <Reply />
+      </div>
+      <div className="msg-body" style={dragX ? { transform: `translateX(${dragX}px)`, transition: 'none' } : undefined}>
+        {!textLike && fwd}
+        {!textLike && quote}
+        {body}
+        {!m.deleted && (
+          <button
+            className="msg-more"
+            aria-label="Actions du message"
+            onClick={(e) => {
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+              h.onMenu(m, r.left, r.bottom)
+            }}
+          >
+            ···
+          </button>
+        )}
+      </div>
       {reactions.length > 0 && (
         <div className="reactions" aria-label="Réactions">
           {reactions.map(([emoji, who]) => (
-            <span key={emoji}>
+            <button
+              key={emoji + who.length}
+              className={who.includes('me') ? 'mine' : ''}
+              onClick={() => void relay.react(m.convId, m.id, emoji)}
+              aria-label={`${emoji} ${who.length}${who.includes('me') ? ', dont toi' : ''}`}
+              title={who.map((f) => (f === 'me' ? 'toi' : h.nameOf(f))).join(', ')}
+            >
               {emoji}
-              {who.length > 1 ? ` ${who.length}` : ''}
-            </span>
+              {who.length > 1 ? <span className="n">{who.length}</span> : null}
+            </button>
           ))}
         </div>
       )}
-      <div className="meta">
-        <span>{metaLine(m, isGroup)}</span>
-        {m.status === 'failed' && out && <button onClick={() => void relay.retry(m.convId, m.id)}>réessayer</button>}
-        <button
-          className="sr-only"
-          onClick={() => onActivate(active ? null : m.id)}
-          aria-label="Réagir ou répondre"
-          style={{ color: 'inherit' }}
-        >
-          <Smile />
-        </button>
-      </div>
+      {(showMeta || m.editedAt || m.status === 'failed' || m.status === 'pending') && (
+        <div className="meta">
+          {m.expireS ? <Timer size={11} aria-label="Message éphémère" /> : null}
+          {m.editedAt && !m.deleted ? <span className="edited">modifié</span> : null}
+          <span>{metaLine(m)}</span>
+          {out && (
+            <span className={`st st-${m.status}`} key={m.status}>
+              {statusWord(m, isGroup)}
+            </span>
+          )}
+          {m.status === 'failed' && out && <button onClick={() => void relay.retry(m.convId, m.id)}>réessayer</button>}
+        </div>
+      )}
     </div>
   )
 })

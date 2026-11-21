@@ -12,6 +12,8 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
   const [handleMsg, setHandleMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [wipeStep, setWipeStep] = useState(0)
   const notif = typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+  const [, bump] = useState(0)
+  const notifOn = snap.settings.notifications && notif === 'granted'
 
   return (
     <div className="scroll">
@@ -166,17 +168,53 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
               </small>
             </span>
           </div>
-          <div className="set-row">
+          <label className="set-row">
             <span className="lbl">
               Notifications
-              <small>{notif === 'granted' ? 'Activées pour cet onglet.' : 'Pour être prévenu quand l’onglet est en arrière-plan.'}</small>
+              <small>
+                {notif === 'denied'
+                  ? 'Bloquées par le navigateur : autorise-les dans les réglages du site.'
+                  : notifOn
+                    ? 'Prévenu même onglet fermé quand ton nœud le permet.'
+                    : 'Pour être prévenu quand l’onglet est en arrière-plan ou fermé.'}
+              </small>
             </span>
-            {notif !== 'granted' && (
-              <button className="btn" onClick={() => void Notification.requestPermission().then(() => relay.toast('C’est noté.'))}>
-                Activer
-              </button>
-            )}
-          </div>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={notifOn}
+              disabled={notif === 'denied' || typeof Notification === 'undefined'}
+              onChange={(e) => void (e.target.checked ? relay.enableNotifications() : relay.disableNotifications()).then(() => bump((x) => x + 1))}
+            />
+          </label>
+          <label className="set-row">
+            <span className="lbl">
+              Aperçu dans les notifications
+              <small>Nom et texte du message. Sinon « Nouveau message ».</small>
+            </span>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={snap.settings.notifPreviews}
+              onChange={(e) => void relay.updateSettings({ notifPreviews: e.target.checked })}
+            />
+          </label>
+        </div>
+
+        <div className="group-title">Messages</div>
+        <div className="group">
+          <label className="set-row">
+            <span className="lbl">
+              Aperçus des liens
+              <small>Ton nœud lit la page pour toi et l’aperçu part avec le message. Le destinataire ne charge rien.</small>
+            </span>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={snap.settings.linkPreviews}
+              onChange={(e) => void relay.updateSettings({ linkPreviews: e.target.checked })}
+            />
+          </label>
         </div>
 
         <div className="group-title">Données</div>

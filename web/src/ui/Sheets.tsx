@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { relay } from '../state/relay'
+import { expireLabel, relay } from '../state/relay'
+import { EXPIRE_CHOICES, MUTE_ALWAYS } from '../state/types'
 import { Avatar, copyText, Sheet, useRelay } from './common'
 import { CipherQR, type CipherStage } from './CipherQR'
 import { QrScanner } from './QrScanner'
@@ -267,6 +268,7 @@ export function ContactSheet({ fp, onClose }: { fp: string; onClose: () => void 
           </button>
         )}
       </div>
+      <ConvOptions convId={fp} />
       <form
         style={{ marginTop: 20 }}
         onSubmit={(e) => {
@@ -407,6 +409,7 @@ export function GroupSheet({ gid, onClose }: { gid: string; onClose: () => void 
           Ajouter des membres
         </button>
       )}
+      <ConvOptions convId={`g:${gid}`} />
       <div style={{ marginTop: 12 }}>
         {confirmLeave ? (
           <div className="row-btns">
@@ -430,5 +433,67 @@ export function GroupSheet({ gid, onClose }: { gid: string; onClose: () => void 
         )}
       </div>
     </Sheet>
+  )
+}
+
+const MUTES: { label: string; hours: number | null }[] = [
+  { label: 'Non', hours: null },
+  { label: '1 heure', hours: 1 },
+  { label: '8 heures', hours: 8 },
+  { label: '1 semaine', hours: 168 },
+  { label: 'Toujours', hours: Infinity },
+]
+
+/** Disappearing messages and mute, per conversation. */
+function ConvOptions({ convId }: { convId: string }) {
+  const snap = useRelay()
+  const conv = snap.conversations.find((c) => c.id === convId)
+  const muted = conv?.mutedUntil && conv.mutedUntil > Date.now() ? conv.mutedUntil : 0
+  const muteLabel = !muted ? 'Non' : muted >= MUTE_ALWAYS ? 'Toujours' : `jusqu’à ${new Date(muted).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
+  return (
+    <div className="group conv-options" style={{ marginTop: 16 }}>
+      <label className="set-row">
+        <span className="lbl">
+          Messages éphémères
+          <small>Effacés chez vous deux après ce délai, compté dès la lecture.</small>
+        </span>
+        <select
+          value={conv?.expireS ?? 0}
+          disabled={!conv}
+          onChange={(e) => void relay.setExpire(convId, Number(e.target.value))}
+          aria-label="Durée des messages éphémères"
+        >
+          {EXPIRE_CHOICES.map((s) => (
+            <option key={s} value={s}>
+              {s ? expireLabel(s) : 'Désactivés'}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="set-row">
+        <span className="lbl">
+          Sourdine
+          <small>{muted ? `En sourdine ${muteLabel === 'Toujours' ? 'pour toujours' : muteLabel}. Les mentions passent quand même.` : 'Notifications actives.'}</small>
+        </span>
+        <select
+          value=""
+          disabled={!conv}
+          onChange={(e) => {
+            const m = MUTES[Number(e.target.value)]
+            if (m) void relay.setMute(convId, m.hours)
+          }}
+          aria-label="Mettre en sourdine"
+        >
+          <option value="" disabled>
+            {muted ? (muted >= MUTE_ALWAYS ? 'Toujours' : 'Active') : 'Non'}
+          </option>
+          {MUTES.map((m, i) => (
+            <option key={m.label} value={i}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   )
 }

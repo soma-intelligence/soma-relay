@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Conversation } from '../state/types'
+import { relay } from '../state/relay'
 import { Avatar, timeLabel, useRelay } from './common'
-import { People, Qr, Radio, Search } from './Icons'
+import { BellOff, People, Qr, Radio, Search, Timer } from './Icons'
 
 export function TransportBadge({ t }: { t?: string }) {
   if (!t) return null
@@ -19,9 +20,65 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
   }
   const isTyping = (c: Conversation) =>
     Object.entries(snap.typing).some(([k, until]) => k.startsWith(c.id + '|') && until > now)
+  const [q, setQ] = useState('')
+  const [hits, setHits] = useState<{ convId: string; id: string; text: string; ts: number }[]>([])
+  useEffect(() => {
+    const n = q.trim()
+    if (n.length < 2) {
+      setHits([])
+      return
+    }
+    let off = false
+    const t = setTimeout(() => void relay.search(n).then((h) => !off && setHits(h)), 180)
+    return () => {
+      off = true
+      clearTimeout(t)
+    }
+  }, [q, snap.conversations])
+  const needle = q.trim().toLowerCase()
+  const convs = needle ? snap.conversations.filter((c) => c.title.toLowerCase().includes(needle)) : snap.conversations
 
   return (
+    <>
+    {snap.conversations.length > 0 && (
+      <div className="search">
+        <Search />
+        <label htmlFor="conv-search" className="sr-only">
+          Chercher dans les discussions
+        </label>
+        <input id="conv-search" type="search" placeholder="Chercher noms et messages" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+    )}
     <div className="scroll">
+      {needle.length >= 2 && (
+        <>
+          {convs.length === 0 && hits.length === 0 && <p className="empty" style={{ paddingTop: 12 }}>Aucun résultat.</p>}
+          {hits.length > 0 && <div className="section-label">Messages · {hits.length}</div>}
+          <ul className="list" style={{ paddingTop: 0 }} aria-label="Messages trouvés">
+            {hits.map((h) => (
+              <li key={h.id}>
+                <button
+                  className="row"
+                  onClick={() => {
+                    relay.setJump(h.convId, h.id)
+                    onOpen(h.convId)
+                  }}
+                >
+                  <Avatar name={relay.titleOf(h.convId)} small />
+                  <span className="row-main">
+                    <span className="row-line">
+                      <span className="row-title">{relay.titleOf(h.convId)}</span>
+                      <span className="row-meta">{timeLabel(h.ts)}</span>
+                    </span>
+                    <span className="row-sub">{snippet(h.text, needle)}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {convs.length > 0 && <div className="section-label">Discussions</div>}
+        </>
+      )}
       {snap.conversations.length === 0 ? (
         <div className="empty">
           <svg width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
@@ -39,7 +96,7 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
         </div>
       ) : (
         <ul className="list" aria-label="Discussions">
-          {snap.conversations.map((c) => (
+          {convs.map((c) => (
             <li key={c.id}>
               <button
                 className="row"
@@ -57,6 +114,8 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
                 <span className="row-main">
                   <span className="row-line">
                     <span className="row-title">{c.title}</span>
+                    {c.expireS ? <Timer size={13} aria-label="Messages éphémères" className="row-ico" /> : null}
+                    {c.mutedUntil && c.mutedUntil > now ? <BellOff size={13} aria-label="En sourdine" className="row-ico" /> : null}
                     <span className="row-meta">{timeLabel(c.lastTs)}</span>
                   </span>
                   <span className="row-line">
@@ -80,6 +139,21 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
       )}
       <ChannelNote />
     </div>
+    </>
+  )
+}
+
+function snippet(text: string, needle: string): React.ReactNode {
+  const i = text.toLowerCase().indexOf(needle)
+  if (i < 0) return text
+  const start = Math.max(0, i - 24)
+  return (
+    <>
+      {start > 0 ? '…' : ''}
+      {text.slice(start, i)}
+      <mark>{text.slice(i, i + needle.length)}</mark>
+      {text.slice(i + needle.length, i + needle.length + 80)}
+    </>
   )
 }
 
