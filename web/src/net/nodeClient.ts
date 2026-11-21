@@ -32,6 +32,8 @@ export class NodeClient {
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private stopped = false
   private ready = false
+  /** Push registration (spec v1.1 section 2), re-sent after every `ready`. */
+  private pushFrame: Record<string, unknown> | null = null
   readonly base: string
 
   constructor(
@@ -133,6 +135,7 @@ export class NodeClient {
         this.raw({ t: 'register', card: toB64Url(utf8(this.card())) })
         if (this.pingTimer) clearInterval(this.pingTimer)
         this.pingTimer = setInterval(() => this.raw({ t: 'ping' }), 25_000)
+        if (this.pushFrame) this.raw(this.pushFrame)
         this.onEvent({ t: 'state', state: 'online' })
         break
       }
@@ -147,6 +150,10 @@ export class NodeClient {
         break
       case 'presence':
         this.onEvent({ t: 'presence', online: (f.online as string[]) ?? [] })
+        break
+      case 'push':
+        // {"t":"push","ok":bool,"reason"?}: informative only.
+        if (f.ok === false) console.info('push not registered on the node:', f.reason ?? 'unknown')
         break
       case 'error':
         this.onEvent({
@@ -178,6 +185,15 @@ export class NodeClient {
     if (this.ready && mailboxes.length) this.raw({ t: 'presence', mailboxes })
   }
 
+  /**
+   * Registers (webpush) or removes (none) the push target of this mailbox. Kept and sent
+   * again after every reconnection.
+   */
+  setPush(frame: { t: 'push'; kind: 'webpush'; sub: unknown } | { t: 'push'; kind: 'none' }) {
+    this.pushFrame = frame.kind === 'none' ? null : frame
+    if (this.ready) this.raw(frame)
+  }
+
   /** Re-sends the card, after a rename or a new handle. */
   reregister() {
     if (this.ready) this.raw({ t: 'register', card: toB64Url(utf8(this.card())) })
@@ -197,6 +213,32 @@ export class NodeClient {
       return Array.isArray(j) ? j : (j.iceServers ?? [])
     } catch {
       return []
+    }
+  }
+
+  /** VAPID public key of the node (`GET /v1/push/vapid`), base64url, or null. */
+  async vapidKey(): Promise<string | null> {
+    try {
+      const r = await fetch(this.url('/v1/push/vapid'))
+      if (!r.ok) return null
+      const j = (await r.json()) as { key?: unknown }
+      return typeof j.key === 'string' && j.key ? j.key : null
+    } catch {
+      return null
+    }
+  }
+
+  /** Link preview made by the node (`GET /v1/preview?url=`). Null on any failure. */
+  async preview(url: string, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+    try {
+      const r = await fetch(this.url(`/v1/preview?url=${encodeURIComponent(url)}`), {
+        signal: signal ?? AbortSignal.timeout(10_000),
+      })
+      if (!r.ok) return null
+      const j = (await r.json()) as unknown
+      return j && typeof j === 'object' ? (j as Record<string, unknown>) : null
+    } catch {
+      return null
     }
   }
 

@@ -4,7 +4,7 @@
 // Router (spec section 6): an open WebRTC data channel first, then the node, then the local
 // test bus, else the outbox (dashed "en route" bubbles) flushed when a transport comes back.
 
-import type { AppMessage, Attachment, CallSignal, Contact, Engine, EngineFactory, Group, Inbound } from '../core/engine'
+import type { AppMessage, Attachment, CallSignal, Contact, Engine, EngineFactory, GeoPoint, Group, Inbound, LinkPreview, PollSpec } from '../core/engine'
 import { RelayError } from '../core/engine'
 import { loadEngineFactory } from '../core/loadEngine'
 import { Storage } from '../lib/storage'
@@ -17,6 +17,9 @@ import { isDataChannelSignal, P2P } from '../net/p2p'
 import { CallManager, type CallEndInfo } from '../calls/callManager'
 import type { PreparedMedia } from '../media/media'
 import type { ChatKind, ChatMessage, Conversation, NodeState, OutboxItem, Settings, Status, Transport } from './types'
+import { MUTE_ALWAYS } from './types'
+import { cleanExpire, cleanGeo, cleanLink, cleanPoll, cleanStrings } from './sanitize'
+import { pushSubscription, registerSW, swSupported } from '../net/push'
 
 export interface Me {
   name: string
@@ -45,6 +48,10 @@ export interface Snapshot {
   settings: Settings
   outboxCount: number
   toast: { id: number; text: string } | null
+  /** A message to scroll to when its conversation opens (search results, notifications). */
+  jump: { convId: string; id: string } | null
+  /** My live location messages being shared right now. */
+  liveShares: Set<string>
 }
 
 const INLINE_MAX = 48 * 1024
@@ -54,14 +61,42 @@ const BUS_PARAM = new URLSearchParams(location.search).get('bus')
 /** The local test bus can be offered in the UI (dev server, or ?bus=1). */
 export const LOCAL_BUS_AVAILABLE = import.meta.env.DEV || BUS_PARAM === '1'
 
-const DEFAULT_SETTINGS: Settings = { nodeUrl: '', handle: '', localBus: false, p2p: true }
+const DEFAULT_SETTINGS: Settings = {
+  nodeUrl: '',
+  handle: '',
+  localBus: false,
+  p2p: true,
+  linkPreviews: true,
+  notifications: true,
+  notifPreviews: true,
+}
+
+/** Kinds that become a bubble. Anything else unknown is ignored (spec v1.1). */
+const BUBBLE_KINDS = new Set<string>(['text', 'image', 'audio', 'video', 'file', 'poll', 'location'])
+const EDIT_WINDOW_MS = 24 * 3600_000
+
+export function expireLabel(s: number): string {
+  switch (s) {
+    case 300:
+      return '5 minutes'
+    case 3600:
+      return '1 heure'
+    case 86400:
+      return '1 jour'
+    case 604800:
+      return '1 semaine'
+    default:
+      return 'désactivé'
+  }
+}
 
 export function convIdFor(inbound: { from: string; group?: string }): string {
   return inbound.group ? `g:${inbound.group}` : inbound.from
 }
 
-function previewOf(kind: ChatKind, text?: string): string {
-  switch (kind) {
+export function previewOf(m: Pick<ChatMessage, 'kind' | 'text' | 'poll' | 'location' | 'attachment' | 'deleted'>): string {
+  if (m.deleted) return 'Message supprimé'
+  switch (m.kind) {
     case 'image':
       return 'Photo'
     case 'audio':
@@ -69,12 +104,39 @@ function previewOf(kind: ChatKind, text?: string): string {
     case 'video':
       return 'Vidéo'
     case 'file':
-      return text || 'Fichier'
+      return `Document : ${m.attachment?.name ?? m.text ?? 'fichier'}`
     case 'call':
-      return text || 'Appel'
+      return m.text || 'Appel'
+    case 'poll':
+      return `Sondage : ${m.poll?.question ?? ''}`
+    case 'location':
+      return m.location?.live_until ? 'Position en direct' : 'Position'
     default:
-      return text ?? ''
+      return m.text ?? ''
   }
+}
+
+function haversine(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+  const r = (x: number) => (x * Math.PI) / 180
+  const dLat = r(b.lat - a.lat)
+  const dLon = r(b.lon - a.lon)
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLon / 2) ** 2
+  return 2 * 6_371_000 * Math.asin(Math.sqrt(h))
+}
+
+/** Wire form of a stored message, for retries and forwards. */
+function toApp(m: ChatMessage): AppMessage {
+  const app: AppMessage = { id: m.id, ts: m.ts, kind: m.kind as AppMessage['kind'] }
+  if (m.text !== undefined) app.text = m.text
+  if (m.replyTo) app.reply_to = m.replyTo
+  if (m.attachment) app.attachment = m.attachment
+  if (m.poll) app.poll = m.poll
+  if (m.location) app.location = m.location
+  if (m.link) app.link = m.link
+  if (m.forwarded) app.forwarded = true
+  if (m.mentions) app.mentions = m.mentions
+  if (m.expireS) app.expire_s = m.expireS
+  return app
 }
 
 export class Relay {
@@ -120,6 +182,8 @@ export class Relay {
       settings,
       outboxCount: 0,
       toast: null,
+      jump: null,
+      liveShares: new Set(),
     }
     this.p2p = new P2P(
       () => this.engine?.fingerprintHex() ?? '',
@@ -137,6 +201,13 @@ export class Relay {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && this.snap.activeConv) void this.markRead(this.snap.activeConv)
     })
+    // A click on a notification asks this window to open the conversation.
+    if (swSupported())
+      navigator.serviceWorker.addEventListener('message', (e: MessageEvent) => {
+        const d = e.data as { t?: string; conv?: string } | null
+        if (d?.t === 'open' && typeof d.conv === 'string') void this.openConversation(d.conv)
+      })
+    setInterval(() => void this.sweepExpired(), 5000)
   }
 
   // Store plumbing
@@ -223,6 +294,12 @@ export class Relay {
     })
     this.persist()
     this.startTransports()
+    void this.sweepStored()
+    const hash = new URLSearchParams(location.hash.slice(1)).get('conv')
+    if (hash && convs.some((c) => c.id === hash)) {
+      history.replaceState(history.state, '', location.pathname + location.search)
+      void this.openConversation(hash)
+    }
   }
 
   private meOf(e: Engine): Me {
@@ -260,6 +337,10 @@ export class Relay {
     this.presenceTimer = setInterval(() => this.pollPresence(), 15_000)
     setTimeout(() => this.pollPresence(), 1500)
     void this.flushOutbox()
+    if (s.notifications && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      void registerSW()
+      void this.subscribePush()
+    }
   }
 
   myCard(): string {
@@ -500,43 +581,152 @@ export class Relay {
       }
       case 'profile':
         return
+      case 'edit':
+        await this.applyEdit(convId, inb.from, m)
+        return
+      case 'delete':
+        if (m.reply_to) await this.applyDelete(convId, inb.from, m.reply_to)
+        return
+      case 'poll-vote':
+        await this.applyVote(convId, inb.from, m)
+        return
+      case 'location-update':
+        await this.applyLocationUpdate(convId, inb.from, m)
+        return
+      case 'settings':
+        await this.applyConvSettings(convId, inb.from, m)
+        return
     }
-    const kind = m.kind as ChatKind
+    if (!BUBBLE_KINDS.has(m.kind)) return
+    const msg = this.toChat(m, convId, inb.from, 'delivered', via)
+    if (!msg) return
     const typing = { ...this.snap.typing }
     delete typing[convId + '|' + inb.from]
     this.set({ typing })
+    if (this.findMessage(convId, msg.id)) return
+    const active = this.snap.activeConv === convId && document.visibilityState === 'visible'
+    msg.times = { received: Date.now() }
+    if (active && msg.expireS) msg.expireAt = Date.now() + msg.expireS * 1000
+    await this.saveMessage(msg)
+    await this.touchConv(convId, {
+      preview: previewOf(msg),
+      ts: m.ts,
+      transport: via,
+      unread: active ? 0 : 1,
+      hadExpiring: !!msg.expireS,
+    })
+    if (!inb.group) this.sendReceipt(inb.from, [m.id], active ? 'read' : 'delivered')
+    if (active) await this.updateStatus([m.id], 'read')
+    const me = this.engine?.fingerprintHex()
+    this.notify(convId, msg, !!me && !!msg.mentions?.includes(me))
+    // Small media downloads right away, so they show without a tap.
+    if (m.attachment && m.attachment.size < 8 * 1024 * 1024 && msg.kind !== 'file') void this.mediaUrl(msg)
+  }
+
+  /** Validated ChatMessage of a wire message, or null when it is not displayable. */
+  private toChat(m: AppMessage, convId: string, from: string, status: Status, via?: Transport): ChatMessage | null {
+    const kind = m.kind as ChatKind
     const msg: ChatMessage = {
       id: m.id,
       convId,
-      from: inb.from,
+      from,
       ts: m.ts,
       kind,
-      text: m.text,
-      replyTo: m.reply_to,
+      text: typeof m.text === 'string' ? m.text.slice(0, 65_536) : undefined,
+      replyTo: typeof m.reply_to === 'string' ? m.reply_to : undefined,
       attachment: m.attachment,
-      status: 'delivered',
+      status,
       transport: via,
     }
-    if (this.findMessage(convId, msg.id)) return
-    await this.saveMessage(msg)
-    const active = this.snap.activeConv === convId && document.visibilityState === 'visible'
-    await this.touchConv(convId, { preview: previewOf(kind, m.text), ts: m.ts, transport: via, unread: active ? 0 : 1 })
-    if (!inb.group) this.sendReceipt(inb.from, [m.id], active ? 'read' : 'delivered')
-    if (active) await this.updateStatus([m.id], 'read')
-    if (!active) this.notify(convId, previewOf(kind, m.text))
-    // Small media downloads right away, so they show without a tap.
-    if (m.attachment && m.attachment.size < 8 * 1024 * 1024 && kind !== 'file') void this.mediaUrl(msg)
+    if (kind === 'poll') {
+      msg.poll = cleanPoll(m.poll)
+      if (!msg.poll) return null
+    }
+    if (kind === 'location') {
+      msg.location = cleanGeo(m.location)
+      if (!msg.location) return null
+      msg.locationTs = m.ts
+    }
+    if (kind !== 'text' && kind !== 'poll' && kind !== 'location' && !m.attachment) return null
+    const link = cleanLink(m.link)
+    if (link) msg.link = link
+    if (m.forwarded === true) msg.forwarded = true
+    const mentions = cleanStrings(m.mentions, 64, 64)
+    if (mentions) msg.mentions = mentions
+    const exp = cleanExpire(m.expire_s)
+    if (exp) msg.expireS = exp
+    return msg
   }
 
-  private notify(convId: string, body: string) {
+  /** Body of a notification, following the spec text rules. */
+  private notifyBody(convId: string, m: ChatMessage): string {
+    const body = previewOf(m)
+    return convId.startsWith('g:') && m.from !== 'me' ? `${this.titleOf(m.from)} : ${body}` : body
+  }
+
+  private notify(convId: string, m: ChatMessage, mention: boolean) {
     if (document.visibilityState === 'visible') return
+    if (!this.snap.settings.notifications) return
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-    const title = this.titleOf(convId)
-    try {
-      new Notification(title, { body, tag: convId, silent: false })
-    } catch {
-      /* not allowed */
+    const conv = this.snap.conversations.find((c) => c.id === convId)
+    if (conv?.mutedUntil && conv.mutedUntil > Date.now() && !mention) return
+    const previews = this.snap.settings.notifPreviews
+    const title = previews ? this.titleOf(convId) : 'Soma Relay'
+    const body = previews ? this.notifyBody(convId, m) : 'Nouveau message'
+    const opts: NotificationOptions = { body, tag: convId, icon: '/icon.svg', data: { conv: convId, url: location.href } }
+    const fallback = () => {
+      try {
+        const n = new Notification(title, opts)
+        n.onclick = () => {
+          window.focus()
+          void this.openConversation(convId)
+          n.close()
+        }
+      } catch {
+        /* not allowed */
+      }
     }
+    if (swSupported())
+      void registerSW().then((reg) => (reg ? reg.showNotification(title, opts).catch(fallback) : fallback()))
+    else fallback()
+  }
+
+  // Notifications and push
+
+  /** Turns notifications on: asks the browser permission (call only from a click). */
+  async enableNotifications(): Promise<boolean> {
+    if (typeof Notification === 'undefined') {
+      this.toast('Ce navigateur ne gère pas les notifications.')
+      return false
+    }
+    const perm = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
+    if (perm !== 'granted') {
+      this.toast('Notifications refusées par le navigateur. Autorise-les dans les réglages du site.')
+      await this.updateSettings({ notifications: false })
+      return false
+    }
+    await this.updateSettings({ notifications: true })
+    await registerSW()
+    const ok = await this.subscribePush()
+    this.toast(ok ? 'Notifications activées, même onglet fermé.' : 'Notifications activées quand l’onglet est ouvert.')
+    return true
+  }
+
+  async disableNotifications() {
+    await this.updateSettings({ notifications: false })
+    this.node?.setPush({ t: 'push', kind: 'none' })
+  }
+
+  /** Web Push through the node, when it publishes a VAPID key. */
+  private async subscribePush(): Promise<boolean> {
+    const node = this.node
+    if (!node) return false
+    const key = await node.vapidKey()
+    if (!key) return false
+    const sub = await pushSubscription(key)
+    if (!sub || node !== this.node) return false
+    node.setPush({ t: 'push', kind: 'webpush', sub })
+    return true
   }
 
   private sendReceipt(fp: string, ids: string[], state: 'delivered' | 'read') {
@@ -579,10 +769,11 @@ export class Relay {
 
   private async touchConv(
     convId: string,
-    p: { preview: string; ts: number; transport?: Transport; unread?: number },
+    p: { preview: string; ts: number; transport?: Transport; unread?: number; hadExpiring?: boolean },
   ) {
     const existing = this.snap.conversations.find((c) => c.id === convId)
     const conv: Conversation = {
+      ...existing,
       id: convId,
       kind: convId.startsWith('g:') ? 'group' : 'direct',
       title: this.titleOf(convId),
@@ -591,6 +782,7 @@ export class Relay {
       unread: (existing?.unread ?? 0) + (p.unread ?? 0),
       transport: p.transport ?? existing?.transport,
       draft: existing?.draft,
+      hadExpiring: existing?.hadExpiring || p.hadExpiring || undefined,
     }
     this.set({ conversations: sortConvs([...this.snap.conversations.filter((c) => c.id !== convId), conv]) })
     await this.store?.putJson('conversations', convId, conv)
@@ -620,6 +812,9 @@ export class Relay {
     if (!unread.length) return
     if (!convId.startsWith('g:')) this.sendReceipt(convId, unread.map((m) => m.id), 'read')
     await this.updateStatus(unread.map((m) => m.id), 'read')
+    // Disappearing messages start their timer when first seen.
+    const now = Date.now()
+    for (const m of unread) if (m.expireS && !m.expireAt) await this.patchMessage(m.id, convId, { expireAt: now + m.expireS * 1000 })
   }
 
   private async updateStatus(ids: string[], status: Status, transport?: Transport) {
@@ -631,7 +826,7 @@ export class Relay {
       messages[conv] = list.map((m) => {
         if (!set.has(m.id)) return m
         if (status !== 'failed' && RANK[m.status] >= RANK[status]) return m
-        const next = { ...m, status, transport: transport ?? m.transport }
+        const next = { ...m, status, transport: transport ?? m.transport, times: { ...m.times, [status]: Date.now() } }
         changed.push(next)
         return next
       })
@@ -678,25 +873,29 @@ export class Relay {
     return this.route(env, { fp: convId, mailbox: c.mailbox }, { msgId: msg.id, convId, queue })
   }
 
-  async sendText(convId: string, text: string, replyTo?: string) {
+  async sendText(
+    convId: string,
+    text: string,
+    replyTo?: string,
+    extra?: { link?: LinkPreview; mentions?: string[] },
+  ) {
     const body = text.trim()
     if (!body) return
-    await this.sendMessage(convId, { kind: 'text', text: body, reply_to: replyTo })
+    const part: Omit<AppMessage, 'id' | 'ts'> = { kind: 'text', text: body, reply_to: replyTo }
+    const link = cleanLink(extra?.link)
+    if (link) part.link = link
+    if (extra?.mentions?.length) part.mentions = extra.mentions
+    await this.sendMessage(convId, part)
   }
 
-  private async sendMessage(convId: string, part: Omit<AppMessage, 'id' | 'ts'>, localMedia?: Uint8Array) {
+  private async sendMessage(convId: string, part: Omit<AppMessage, 'id' | 'ts'>, localMedia?: Uint8Array): Promise<string | null> {
+    const conv0 = this.snap.conversations.find((c) => c.id === convId)
     const msg: AppMessage = { id: uuidv7(), ts: Date.now(), ...part }
-    const chat: ChatMessage = {
-      id: msg.id,
-      convId,
-      from: 'me',
-      ts: msg.ts,
-      kind: msg.kind as ChatKind,
-      text: msg.text,
-      replyTo: msg.reply_to,
-      attachment: msg.attachment,
-      status: 'pending',
-    }
+    if (conv0?.expireS) msg.expire_s = conv0.expireS
+    if (msg.reply_to === undefined) delete msg.reply_to
+    const chat = this.toChat(msg, convId, 'me', 'pending')
+    if (!chat) return null
+    if (chat.expireS) chat.expireAt = chat.ts + chat.expireS * 1000
     if (localMedia) {
       await this.store?.putBytes('media', msg.id, localMedia)
       const mime = msg.attachment?.mime ?? 'application/octet-stream'
@@ -709,14 +908,349 @@ export class Relay {
     } catch (e) {
       await this.updateStatus([msg.id], 'failed')
       this.toast(e instanceof Error ? e.message : 'Envoi impossible.')
-      return
+      return msg.id
     }
     // The node confirms with "sent"; other transports count as sent now.
     if (via && via !== 'net') await this.updateStatus([msg.id], 'sent', via)
     else if (via === 'net') await this.patchMessage(msg.id, convId, { transport: 'net' })
-    await this.touchConv(convId, { preview: previewOf(chat.kind, chat.text), ts: chat.ts, transport: via ?? undefined })
+    await this.touchConv(convId, { preview: previewOf(chat), ts: chat.ts, transport: via ?? undefined, hadExpiring: !!chat.expireS })
     const conv = this.snap.conversations.find((c) => c.id === convId)
     if (conv?.draft) await this.setDraft(convId, '')
+    return msg.id
+  }
+
+  /** Control messages (edit, delete, votes...): best effort, queued when offline. */
+  private control(convId: string, part: Omit<AppMessage, 'id' | 'ts'>, queue = true) {
+    try {
+      this.deliver(convId, { id: uuidv7(), ts: Date.now(), ...part }, queue)
+    } catch (e) {
+      console.warn('control message failed', e)
+    }
+  }
+
+  private async getMessage(convId: string, id: string): Promise<ChatMessage | undefined> {
+    const list = this.snap.messages[convId] ?? (await this.loadMessages(convId))
+    return list.find((m) => m.id === id)
+  }
+
+  // Edit and delete
+
+  canEdit(m: ChatMessage): boolean {
+    return m.from === 'me' && m.kind === 'text' && !m.deleted && Date.now() - m.ts < EDIT_WINDOW_MS
+  }
+
+  async editMessage(convId: string, id: string, text: string) {
+    const m = await this.getMessage(convId, id)
+    const body = text.trim()
+    if (!m || !this.canEdit(m) || !body || body === m.text) return
+    this.control(convId, { kind: 'edit', reply_to: id, text: body })
+    await this.patchMessage(id, convId, { text: body, editedAt: Date.now() })
+    await this.refreshPreview(convId)
+  }
+
+  private async applyEdit(convId: string, from: string, m: AppMessage) {
+    if (!m.reply_to || typeof m.text !== 'string' || !m.text.trim()) return
+    const t = await this.getMessage(convId, m.reply_to)
+    if (!t || t.from !== from || t.kind !== 'text' || t.deleted) return
+    if (m.ts - t.ts > EDIT_WINDOW_MS || (t.editedAt && t.editedAt > m.ts)) return
+    await this.patchMessage(t.id, convId, { text: m.text.slice(0, 65_536), editedAt: m.ts })
+    await this.refreshPreview(convId)
+  }
+
+  async deleteForEveryone(convId: string, id: string) {
+    const m = await this.getMessage(convId, id)
+    if (!m || m.from !== 'me' || m.deleted) return
+    this.control(convId, { kind: 'delete', reply_to: id })
+    await this.wipeContent(m)
+  }
+
+  private async applyDelete(convId: string, from: string, id: string) {
+    const t = await this.getMessage(convId, id)
+    if (!t || t.from !== from || t.deleted) return
+    await this.wipeContent(t)
+  }
+
+  /** "Message supprimé": the bubble stays, its content and media go. */
+  private async wipeContent(m: ChatMessage) {
+    this.stopLive(m.id, false)
+    await this.dropMedia(m.id)
+    await this.patchMessage(m.id, m.convId, {
+      deleted: true,
+      text: undefined,
+      attachment: undefined,
+      poll: undefined,
+      votes: undefined,
+      location: undefined,
+      link: undefined,
+      reactions: undefined,
+      mentions: undefined,
+    })
+    await this.refreshPreview(m.convId)
+  }
+
+  private async dropMedia(id: string) {
+    const url = this.mediaUrls.get(id)
+    if (url) URL.revokeObjectURL(url)
+    this.mediaUrls.delete(id)
+    await this.store?.delete('media', id)
+  }
+
+  /** Removes a message from this device only. */
+  async deleteForMe(convId: string, id: string) {
+    this.stopLive(id, true)
+    await this.dropMedia(id)
+    const list = this.snap.messages[convId] ?? []
+    this.set({ messages: { ...this.snap.messages, [convId]: list.filter((m) => m.id !== id) } })
+    await this.store?.delete('messages', id)
+    await this.refreshPreview(convId)
+  }
+
+  /** Conversation preview from its newest bubble. */
+  private async refreshPreview(convId: string) {
+    const conv = this.snap.conversations.find((c) => c.id === convId)
+    if (!conv) return
+    const list = this.snap.messages[convId] ?? []
+    const last = [...list].reverse().find((m) => m.kind !== 'system') ?? list[list.length - 1]
+    const next = { ...conv, preview: last ? previewOf(last) : '' }
+    if (next.preview === conv.preview) return
+    this.set({ conversations: this.snap.conversations.map((c) => (c.id === convId ? next : c)) })
+    await this.store?.putJson('conversations', convId, next)
+  }
+
+  // Forward
+
+  async forward(fromConv: string, id: string, toConv: string) {
+    const m = await this.getMessage(fromConv, id)
+    if (!m || m.deleted || m.kind === 'call' || m.kind === 'system') return
+    const app = toApp(m)
+    const part: Omit<AppMessage, 'id' | 'ts'> = { kind: app.kind, forwarded: true }
+    if (app.text !== undefined) part.text = app.text
+    if (app.attachment) part.attachment = app.attachment // same key and blob URL, no re-upload
+    if (app.link) part.link = app.link
+    if (m.kind === 'poll' && m.poll) part.poll = { question: m.poll.question, options: m.poll.options, multi: m.poll.multi }
+    if (m.kind === 'location' && m.location) {
+      const { live_until: _l, stop: _s, heading: _h, ...pin } = m.location
+      part.location = pin
+    }
+    let plain: Uint8Array | undefined
+    if (m.attachment) plain = (await this.store?.getBytes('media', m.id)) ?? undefined
+    await this.sendMessage(toConv, part, plain)
+  }
+
+  // Polls
+
+  async sendPoll(convId: string, poll: PollSpec) {
+    const clean = cleanPoll(poll)
+    if (!clean) throw new Error('Il faut une question et au moins deux réponses.')
+    await this.sendMessage(convId, { kind: 'poll', poll: clean })
+  }
+
+  async vote(convId: string, pollId: string, opts: string[]) {
+    const ok = await this.applyVote(convId, 'me', { id: uuidv7(), ts: Date.now(), kind: 'poll-vote', reply_to: pollId, vote: opts })
+    if (ok) this.control(convId, { kind: 'poll-vote', reply_to: pollId, vote: opts })
+  }
+
+  async closePoll(convId: string, pollId: string) {
+    const m = await this.getMessage(convId, pollId)
+    if (!m || m.from !== 'me' || m.pollClosed) return
+    this.control(convId, { kind: 'poll-vote', reply_to: pollId, vote: [], close: true })
+    await this.patchMessage(pollId, convId, { pollClosed: true })
+  }
+
+  private async applyVote(convId: string, from: string, m: AppMessage): Promise<boolean> {
+    if (!m.reply_to) return false
+    const t = await this.getMessage(convId, m.reply_to)
+    if (!t || t.kind !== 'poll' || !t.poll || t.deleted) return false
+    if (m.close === true) {
+      if (t.from === from && !t.pollClosed) await this.patchMessage(t.id, convId, { pollClosed: true })
+      return false
+    }
+    if (t.pollClosed || (t.poll.closes_at && m.ts > t.poll.closes_at)) return false
+    const valid = new Set(t.poll.options.map((o) => o.id))
+    let opts = [...new Set(cleanStrings(m.vote, 12, 16) ?? [])].filter((o) => valid.has(o))
+    if (!t.poll.multi) opts = opts.slice(0, 1)
+    const prev = t.votes?.[from]
+    if (prev && prev.ts > m.ts) return false
+    const votes = { ...t.votes }
+    if (opts.length) votes[from] = { opts, ts: m.ts }
+    else delete votes[from]
+    await this.patchMessage(t.id, convId, { votes })
+    return true
+  }
+
+  // Location
+
+  async sendLocation(convId: string, point: GeoPoint, liveMs?: number) {
+    const location: GeoPoint = { lat: point.lat, lon: point.lon }
+    if (point.accuracy_m !== undefined) location.accuracy_m = Math.round(point.accuracy_m)
+    if (point.name) location.name = point.name
+    if (liveMs) location.live_until = Date.now() + liveMs
+    const id = await this.sendMessage(convId, { kind: 'location', location })
+    if (id && liveMs) this.startLive(convId, id, location)
+  }
+
+  private live = new Map<string, { convId: string; watch: number; timer: ReturnType<typeof setTimeout>; last: { lat: number; lon: number; t: number }; pos?: GeolocationPosition }>()
+
+  private startLive(convId: string, id: string, loc: GeoPoint) {
+    if (!('geolocation' in navigator) || !loc.live_until) return
+    const until = loc.live_until
+    const entry = {
+      convId,
+      watch: 0,
+      timer: setTimeout(() => this.stopLive(id, true), Math.max(0, until - Date.now())),
+      last: { lat: loc.lat, lon: loc.lon, t: Date.now() },
+      pos: undefined as GeolocationPosition | undefined,
+    }
+    entry.watch = navigator.geolocation.watchPosition(
+      (pos) => {
+        entry.pos = pos
+        const now = Date.now()
+        if (now > until) return this.stopLive(id, true)
+        const p = { lat: pos.coords.latitude, lon: pos.coords.longitude }
+        if (now - entry.last.t < 10_000 || haversine(entry.last, p) <= 10) return
+        entry.last = { ...p, t: now }
+        const update: GeoPoint = { ...p, accuracy_m: Math.round(pos.coords.accuracy) }
+        if (pos.coords.heading !== null && Number.isFinite(pos.coords.heading)) update.heading = pos.coords.heading
+        this.control(convId, { kind: 'location-update', reply_to: id, location: update }, false)
+        void this.moveLocal(convId, id, update, now, false)
+      },
+      () => {
+        /* keep the last position */
+      },
+      { enableHighAccuracy: true, maximumAge: 5000 },
+    )
+    this.live.set(id, entry)
+    this.set({ liveShares: new Set(this.live.keys()) })
+  }
+
+  /** Ends a live share of mine. `notify` sends the final `stop: true` update. */
+  stopLive(id: string, notify = true) {
+    const e = this.live.get(id)
+    if (!e) return
+    navigator.geolocation.clearWatch(e.watch)
+    clearTimeout(e.timer)
+    this.live.delete(id)
+    this.set({ liveShares: new Set(this.live.keys()) })
+    if (!notify) return
+    const p = e.pos ? { lat: e.pos.coords.latitude, lon: e.pos.coords.longitude } : { lat: e.last.lat, lon: e.last.lon }
+    this.control(e.convId, { kind: 'location-update', reply_to: id, location: { ...p, stop: true } })
+    void this.moveLocal(e.convId, id, p, Date.now(), true)
+  }
+
+  private async moveLocal(convId: string, id: string, p: GeoPoint, ts: number, stop: boolean) {
+    const t = await this.getMessage(convId, id)
+    if (!t?.location) return
+    await this.patchMessage(id, convId, {
+      location: { ...t.location, lat: p.lat, lon: p.lon, accuracy_m: p.accuracy_m ?? t.location.accuracy_m, heading: p.heading },
+      locationTs: ts,
+      liveStopped: stop || t.liveStopped,
+    })
+  }
+
+  private async applyLocationUpdate(convId: string, from: string, m: AppMessage) {
+    if (!m.reply_to) return
+    const p = cleanGeo(m.location)
+    const t = await this.getMessage(convId, m.reply_to)
+    if (!p || !t?.location?.live_until || t.from !== from || t.liveStopped || t.deleted) return
+    if (m.ts > t.location.live_until + 60_000 || (t.locationTs && m.ts < t.locationTs)) return
+    await this.moveLocal(convId, t.id, p, m.ts, !!p.stop)
+  }
+
+  // Disappearing messages
+
+  async setExpire(convId: string, expireS: number) {
+    const s = cleanExpire(expireS) ?? 0
+    this.control(convId, { kind: 'settings', settings: { expire_s: s } })
+    await this.patchConv(convId, { expireS: s, hadExpiring: true })
+    await this.addSystem(convId, `Tu as réglé les messages éphémères : ${expireLabel(s)}.`)
+  }
+
+  private async applyConvSettings(convId: string, from: string, m: AppMessage) {
+    const raw = m.settings?.expire_s
+    if (typeof raw !== 'number') return
+    const s = raw === 0 ? 0 : cleanExpire(raw)
+    if (s === undefined) return
+    const conv = this.snap.conversations.find((c) => c.id === convId)
+    if ((conv?.expireS ?? 0) === s) return
+    await this.addSystem(convId, `${this.titleOf(from)} a réglé les messages éphémères : ${expireLabel(s)}.`)
+    await this.patchConv(convId, { expireS: s, hadExpiring: true })
+  }
+
+  async patchConv(convId: string, patch: Partial<Conversation>) {
+    const conv = this.snap.conversations.find((c) => c.id === convId)
+    if (!conv) return
+    const next = { ...conv, ...patch }
+    this.set({ conversations: this.snap.conversations.map((c) => (c.id === convId ? next : c)) })
+    await this.store?.putJson('conversations', convId, next)
+  }
+
+  async setMute(convId: string, hours: number | null) {
+    const until = hours === null ? undefined : hours === Infinity ? MUTE_ALWAYS : Date.now() + hours * 3600_000
+    await this.patchConv(convId, { mutedUntil: until })
+  }
+
+  /** Deletes loaded messages whose timer ran out. */
+  private async sweepExpired() {
+    const now = Date.now()
+    for (const [convId, list] of Object.entries(this.snap.messages)) {
+      for (const m of list) if (m.expireAt && m.expireAt <= now) await this.deleteForMe(convId, m.id)
+    }
+  }
+
+  /** At start: sweeps conversations that ever had a timer, loaded or not. */
+  private async sweepStored() {
+    const now = Date.now()
+    for (const c of this.snap.conversations) {
+      if (!c.hadExpiring) continue
+      const list = (await this.store?.messagesOf<ChatMessage>(c.id)) ?? []
+      for (const m of list) {
+        if (!m.expireAt || m.expireAt > now) continue
+        await this.store?.delete('messages', m.id)
+        await this.store?.delete('media', m.id)
+      }
+    }
+  }
+
+  // Search
+
+  /** Local search over conversation titles and message text. */
+  async search(q: string): Promise<{ convId: string; id: string; text: string; ts: number }[]> {
+    const n = q.trim().toLowerCase()
+    if (n.length < 2) return []
+    const hits: { convId: string; id: string; text: string; ts: number }[] = []
+    for (const c of this.snap.conversations) {
+      const list = this.snap.messages[c.id] ?? (await this.store?.messagesOf<ChatMessage>(c.id)) ?? []
+      for (const m of list) {
+        const text = m.kind === 'poll' ? m.poll?.question : m.kind === 'file' ? (m.attachment?.name ?? m.text) : m.text
+        if (!m.deleted && m.kind !== 'system' && text && text.toLowerCase().includes(n)) hits.push({ convId: c.id, id: m.id, text, ts: m.ts })
+      }
+    }
+    return hits.sort((a, b) => b.ts - a.ts).slice(0, 60)
+  }
+
+  /** Asks the chat view of `convId` to scroll to `id` once it shows. */
+  setJump(convId: string, id: string) {
+    this.set({ jump: { convId, id } })
+  }
+
+  clearJump() {
+    if (this.snap.jump) this.set({ jump: null })
+  }
+
+  // Link previews
+
+  private previews = new Map<string, Promise<LinkPreview | null>>()
+
+  /** Preview of `url` made by the node (sender side only). Cached per URL. */
+  linkPreview(url: string): Promise<LinkPreview | null> {
+    if (!this.snap.settings.linkPreviews || !this.node) return Promise.resolve(null)
+    let p = this.previews.get(url)
+    if (!p) {
+      p = this.node.preview(url).then((j) => (j ? (cleanLink({ ...j, url: typeof j.url === 'string' ? j.url : url }) ?? null) : null))
+      this.previews.set(url, p)
+      if (this.previews.size > 50) this.previews.delete(this.previews.keys().next().value!)
+    }
+    return p
   }
 
   private async patchMessage(id: string, convId: string, patch: Partial<ChatMessage>) {
@@ -732,7 +1266,7 @@ export class Relay {
     const m = this.findMessage(convId, id)
     if (!m || m.from !== 'me') return
     await this.patchMessage(id, convId, { status: 'pending' })
-    const app: AppMessage = { id: m.id, ts: m.ts, kind: m.kind as AppMessage['kind'], text: m.text, reply_to: m.replyTo, attachment: m.attachment }
+    const app = toApp(m)
     try {
       const via = this.deliver(convId, app)
       if (via && via !== 'net') await this.updateStatus([id], 'sent', via)
@@ -772,6 +1306,7 @@ export class Relay {
       this.toast('Il faut un nœud en ligne pour les fichiers de plus de 48 Ko.')
       return
     }
+    if (media.pages) att.pages = media.pages
     await this.sendMessage(convId, { kind, attachment: att, text: kind === 'file' ? name : undefined }, media.bytes)
   }
 

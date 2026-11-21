@@ -20,6 +20,13 @@ export type AppKind =
   | 'reaction'
   | 'group-op'
   | 'profile'
+  | 'edit'
+  | 'delete'
+  | 'poll'
+  | 'poll-vote'
+  | 'location'
+  | 'location-update'
+  | 'settings'
 
 export interface Attachment {
   mime: string
@@ -38,6 +45,41 @@ export interface Attachment {
   inline?: string
   /** Node blob URL of the encrypted file. */
   url?: string
+  /** Page count of a document (PDF, slides), v1.1. */
+  pages?: number
+}
+
+export interface PollOption {
+  id: string
+  text: string
+}
+
+export interface PollSpec {
+  question: string
+  options: PollOption[]
+  multi: boolean
+  closes_at?: number
+}
+
+export interface GeoPoint {
+  lat: number
+  lon: number
+  accuracy_m?: number
+  name?: string
+  address?: string
+  /** Live sharing ends at this time (ms). Absent for a static pin. */
+  live_until?: number
+  heading?: number
+  stop?: boolean
+}
+
+export interface LinkPreview {
+  url: string
+  title?: string
+  description?: string
+  site?: string
+  /** Base64 JPEG, longest side 600 px, at most 40 KiB. */
+  image?: string
 }
 
 export type CallAction = 'offer' | 'answer' | 'ice' | 'end' | 'decline' | 'busy'
@@ -60,6 +102,16 @@ export interface AppMessage {
   receipt?: { of: string[]; state: 'delivered' | 'read' }
   call?: CallSignal
   group?: Record<string, unknown>
+  // v1.1 (docs/specs/2026-11-21-v1.1-messaging.md). Every field is optional and untrusted.
+  poll?: PollSpec
+  vote?: string[]
+  close?: boolean
+  location?: GeoPoint
+  link?: LinkPreview
+  forwarded?: boolean
+  mentions?: string[]
+  expire_s?: number
+  settings?: { expire_s?: number }
 }
 
 export interface Contact {

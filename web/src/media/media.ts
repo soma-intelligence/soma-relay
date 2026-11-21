@@ -13,6 +13,7 @@ export interface PreparedMedia {
   height?: number
   duration_ms?: number
   thumb?: string
+  pages?: number
 }
 
 const encoderCache = new Map<string, boolean>()
@@ -117,6 +118,24 @@ export async function prepareVideo(file: File): Promise<PreparedMedia> {
 export async function prepareFile(file: File): Promise<PreparedMedia> {
   if (file.size > FILE_MAX_BYTES) throw new Error('Fichier trop lourd (100 Mo max).')
   return { bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type || 'application/octet-stream' }
+}
+
+/**
+ * A document: PDFs get a first-page thumbnail and a page count from pdf.js, loaded on demand
+ * so the main bundle stays small. Any failure sends the file without them.
+ */
+export async function prepareDocument(file: File): Promise<PreparedMedia> {
+  const base = await prepareFile(file)
+  const isPdf = base.mime === 'application/pdf' || /\.pdf$/i.test(file.name)
+  if (!isPdf) return base
+  try {
+    const { pdfThumbnail } = await import('./pdf')
+    const t = await pdfThumbnail(base.bytes)
+    return { ...base, mime: 'application/pdf', ...t }
+  } catch (e) {
+    console.info('pdf thumbnail failed', e)
+    return base
+  }
 }
 
 export function voiceMime(): string {
