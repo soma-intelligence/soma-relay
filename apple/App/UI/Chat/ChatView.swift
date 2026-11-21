@@ -141,9 +141,9 @@ struct ChatView: View {
             .background {
                 // Messages fade out under the header instead of showing through the glass.
                 LinearGradient(
-                    stops: [.init(color: Theme.background, location: 0), .init(color: Theme.background, location: 0.7), .init(color: Theme.background.opacity(0), location: 1)],
+                    stops: [.init(color: Theme.background, location: 0), .init(color: Theme.background, location: 0.9), .init(color: Theme.background.opacity(0), location: 1)],
                     startPoint: .top, endPoint: .bottom)
-                    .padding(.bottom, -18)
+                    .padding(.bottom, -14)
                     .ignoresSafeArea(edges: .top)
                     .allowsHitTesting(false)
             }
