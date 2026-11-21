@@ -1,0 +1,81 @@
+name: SomaRelay
+options:
+  bundleIdPrefix: me.somalabs
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: fr
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: M968YV4J8W
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift.git
+    from: "7.9.0"
+  WebRTC:
+    url: https://github.com/webrtc-sdk/Specs.git
+    exactVersion: "150.7871.08"
+targets:
+  SomaRelay:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    dependencies:
+      - package: GRDB
+      - package: WebRTC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.somalabs.relay
+        PRODUCT_NAME: SomaRelay
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Soma Relay
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: fr
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+          - voip
+        NSCameraUsageDescription: Soma Relay utilise la caméra pour scanner le QR d'un contact, prendre des photos et passer des appels vidéo.
+        NSMicrophoneUsageDescription: Soma Relay utilise le micro pour les notes vocales et les appels.
+        NSPhotoLibraryUsageDescription: Soma Relay accède à tes photos seulement quand tu choisis d'en envoyer une.
+        NSPhotoLibraryAddUsageDescription: Soma Relay enregistre dans tes photos les images que tu choisis de garder.
+        NSBluetoothAlwaysUsageDescription: Soma Relay utilise le Bluetooth pour faire passer tes messages de téléphone en téléphone, même sans réseau.
+        NSLocalNetworkUsageDescription: Soma Relay cherche les téléphones proches pour faire passer tes messages chiffrés sans Internet.
+        NSBonjourServices:
+          - _soma-relay._tcp
+          - _soma-relay._udp
+        CFBundleURLTypes:
+          - CFBundleURLName: me.somalabs.relay
+            CFBundleURLSchemes:
+              - somarelay
+schemes:
+  SomaRelay:
+    build:
+      targets:
+        SomaRelay: all
+    run:
+      config: Debug
+    archive:
+      config: Release

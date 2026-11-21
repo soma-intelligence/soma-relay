@@ -1,0 +1,784 @@
+import Foundation
+import Observation
+import SwiftUI
+import UserNotifications
+
+/// The whole app state: identity (core), storage, transports and calls. Main actor only.
+@Observable
+final class AppModel {
+    enum Phase: Equatable { case loading, onboarding, ready }
+
+    static let defaultNodeURL = "https://relay.somalabs.me"
+
+    var phase: Phase = .loading
+    private(set) var core: RelayCoreAPI?
+    let db: AppDatabase
+
+    var contacts: [ContactJSON] = []
+    var groups: [GroupJSON] = []
+    var channels: [String] = []
+    var conversations: [ConversationRecord] = []
+    var nearby: [NearbyPeer] = []
+    var meshPeerCount = 0
+    var nodeState: NodeClient.State = .off
+    var nodeOnline: Set<String> = []
+    var typingUntil: [String: Date] = [:]
+    var routes: [String: PathInfo] = [:]
+    /// Bumped whenever messages change, so open chats reload.
+    var messageVersion = 0
+    var activeConversation: String?
+    /// A contact just added: the QR tile turns into the safety words for them.
+    var justAdded: ContactJSON?
+    var banner: String?
+
+    var nodeURL: String {
+        didSet {
+            UserDefaults.standard.set(nodeURL, forKey: "nodeURL")
+            if let url = URL(string: nodeURL) { node.setBaseURL(url) }
+        }
+    }
+    var handle: String {
+        didSet { UserDefaults.standard.set(handle, forKey: "handle") }
+    }
+    var visibleNearby: Bool {
+        didSet {
+            UserDefaults.standard.set(visibleNearby, forKey: "visibleNearby")
+            restartMesh()
+        }
+    }
+    var nodeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(nodeEnabled, forKey: "nodeEnabled")
+            if nodeEnabled { node.connect() } else { node.disconnect() }
+        }
+    }
+
+    let mesh = MeshTransport()
+    private(set) var node: NodeClient!
+    private var meshRouter: MeshRouterAPI?
+    private(set) var calls: CallManager!
+    let demo: Bool
+    private var saveTask: Task<Void, Never>?
+    private var lastTypingSent: [String: Date] = [:]
+
+    init() {
+        let args = UserDefaults.standard
+        demo = args.bool(forKey: "RelayDemoData")
+        nodeURL = args.string(forKey: "nodeURL") ?? Self.defaultNodeURL
+        handle = args.string(forKey: "handle") ?? ""
+        visibleNearby = args.object(forKey: "visibleNearby") as? Bool ?? true
+        nodeEnabled = args.object(forKey: "nodeEnabled") as? Bool ?? true
+        db = (try? AppDatabase(inMemory: demo)) ?? (try! AppDatabase(inMemory: true))
+        node = NodeClient(
+            baseURL: URL(string: nodeURL) ?? URL(string: Self.defaultNodeURL)!,
+            core: { [weak self] in self?.core },
+            card: { [weak self] in self?.myCard })
+        node.delegate = self
+        mesh.delegate = self
+        calls = CallManager(model: self)
+    }
+
+    var displayName: String { core?.displayName() ?? "" }
+    var usesRealCore: Bool { RelayCoreFactory.usesRealCore }
+
+    var myCard: String? {
+        core?.myCard(nodeUrl: nodeEnabled ? nodeURL : nil, handle: handle.isEmpty ? nil : handle)
+    }
+
+    var myCompactLink: String? { core?.myCompactLink(nodeUrl: nodeEnabled ? nodeURL : nil) }
+
+    // MARK: Launch
+
+    func start() {
+        if demo {
+            DemoData.seed(self)
+            phase = .ready
+            return
+        }
+        if let state = db.value(for: "engine"), let restored = try? RelayCoreFactory.restore(state: state) {
+            core = restored
+            didLoadCore()
+            phase = .ready
+        } else {
+            phase = .onboarding
+        }
+    }
+
+    /// Onboarding: new identity.
+    func createIdentity(name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Let the "keys being generated" state draw before the work (milliseconds in practice).
+        try? await Task.sleep(for: .milliseconds(60))
+        core = RelayCoreFactory.create(displayName: trimmed)
+        saveNow()
+        didLoadCore()
+    }
+
+    func finishOnboarding() {
+        withAnimation(.smooth) { phase = .ready }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    /// For tests and demo data.
+    func adoptCore(_ engine: RelayCoreAPI) {
+        core = engine
+    }
+
+    private func didLoadCore() {
+        guard let core else { return }
+        meshRouter = core.makeMeshRouter()
+        (core as? MockRelayCore)?.setHandle(handle.isEmpty ? nil : handle, node: nodeEnabled ? nodeURL : nil)
+        if core.rotatePrekeyIfDue(nowMs: Clock.nowMs) { scheduleSave() }
+        reloadContacts()
+        reloadConversations()
+        restartMesh()
+        if nodeEnabled { node.connect() }
+    }
+
+    func restartMesh() {
+        guard core != nil, !demo else { return }
+        mesh.start(visibleName: visibleNearby ? displayName : nil, compactLink: visibleNearby ? myCompactLink : nil)
+    }
+
+    // MARK: Persistence
+
+    func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.saveNow()
+        }
+    }
+
+    func saveNow() {
+        guard let core, !demo else { return }
+        db.setValue(core.exportState(), for: "engine")
+    }
+
+    func reloadContacts() {
+        guard let core, !demo else { return }
+        contacts = JSON.decode([ContactJSON].self, core.contacts()) ?? []
+        groups = JSON.decode([GroupJSON].self, core.groups()) ?? []
+        channels = (UserDefaults.standard.stringArray(forKey: "channels") ?? [])
+    }
+
+    func reloadConversations() {
+        conversations = db.conversations()
+        updateBadge()
+    }
+
+    private func updateBadge() {
+        let unread = conversations.reduce(0) { $0 + $1.unread }
+        UNUserNotificationCenter.current().setBadgeCount(unread) { _ in }
+    }
+
+    func contact(_ fp: String) -> ContactJSON? { contacts.first { $0.fingerprint == fp } }
+
+    func name(of fp: String?) -> String {
+        guard let fp else { return "Toi" }
+        return contact(fp)?.name ?? "Inconnu " + String(fp.prefix(4)).uppercased()
+    }
+
+    // MARK: Conversations
+
+    static func directId(_ fp: String) -> String { "d:" + fp }
+    static func groupId(_ id: String) -> String { "g:" + id }
+    static func channelId(_ name: String) -> String { "c:" + name }
+
+    func preview(of conversation: ConversationRecord) -> String {
+        SecretBox.shared.openText(conversation.previewSealed) ?? ""
+    }
+
+    @discardableResult func openDirect(_ fp: String) -> ConversationRecord {
+        let id = Self.directId(fp)
+        if let existing = db.conversation(id) { return existing }
+        let c = ConversationRecord(id: id, kind: .direct, title: name(of: fp), peer: fp, lastAt: Clock.nowMs, unread: 0, lastTransport: nil, previewSealed: nil)
+        db.save(c)
+        reloadConversations()
+        return c
+    }
+
+    func markRead(_ conversationId: String) {
+        guard var c = db.conversation(conversationId) else { return }
+        let hadUnread = c.unread > 0
+        c.unread = 0
+        db.save(c)
+        reloadConversations()
+        // Read receipts for direct chats.
+        guard hadUnread || true, c.kind == .direct, let fp = c.peer, !demo else { return }
+        let unreadIds = db.messages(in: conversationId, limit: 50).filter { $0.sender != nil && $0.status != .read }.map(\.id)
+        guard !unreadIds.isEmpty else { return }
+        var records = db.messages(in: conversationId, limit: 50)
+        for i in records.indices where unreadIds.contains(records[i].id) {
+            records[i].status = .read
+            db.save(records[i])
+        }
+        var receipt = AppMessage.make(.receipt)
+        receipt.receipt = .init(of: unreadIds, state: .read, hops: nil)
+        sendControl(receipt, to: fp)
+    }
+
+    func deleteConversation(_ id: String) {
+        db.deleteConversation(id)
+        reloadConversations()
+    }
+
+    func items(in conversationId: String) -> [ChatItem] {
+        let conv = db.conversation(conversationId)
+        return db.messages(in: conversationId).map { record in
+            ChatItem(record: record, senderName: conv?.kind == .direct ? nil : record.sender.map { name(of: $0) })
+        }
+    }
+
+    func isTyping(_ conversationId: String) -> Bool {
+        (typingUntil[conversationId] ?? .distantPast) > Date()
+    }
+
+    // MARK: Sending
+
+    /// Text (and replies) to a conversation.
+    func send(text: String, in conversationId: String, replyTo: String? = nil) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var message = AppMessage.make(.text, text: trimmed)
+        message.replyTo = replyTo
+        post(message, in: conversationId, preview: trimmed)
+    }
+
+    /// Stores then delivers an outgoing message.
+    func post(_ message: AppMessage, in conversationId: String, preview: String, mediaPath: String? = nil) {
+        let record = MessageRecord(
+            id: message.id, conversationId: conversationId, sender: nil, ts: message.ts, kind: message.kind.rawValue,
+            bodySealed: SecretBox.shared.seal(message.json()), status: .pending, transport: .local, hops: nil, relays: nil,
+            replyTo: message.replyTo, mediaPath: mediaPath)
+        db.save(record)
+        touch(conversationId, preview: preview, transport: nil, incoming: false)
+        Haptics.soft()
+        deliver(message, in: conversationId)
+    }
+
+    func retry(_ messageId: String) {
+        guard let record = db.message(messageId), let item = Optional(ChatItem(record: record, senderName: nil)) else { return }
+        deliver(item.message, in: record.conversationId)
+    }
+
+    private func deliver(_ message: AppMessage, in conversationId: String) {
+        guard let core, let conv = db.conversation(conversationId) else { return }
+        do {
+            switch conv.kind {
+            case .direct:
+                guard let fp = conv.peer, let contact = contact(fp) else { return }
+                let env = try core.encryptFor(fp: fp, appMessageJson: message.json())
+                scheduleSave()
+                let result = route(env, to: contact, messageId: message.id)
+                update(message.id, transport: result.transport, status: result.status, relays: result.relays)
+            case .group:
+                guard let gid = conv.peer, let group = groups.first(where: { $0.id == gid }) else { return }
+                let envs = try core.groupEncrypt(groupId: gid, appMessageJson: message.json())
+                scheduleSave()
+                var best: (transport: Transport, status: DeliveryStatus, relays: Int?) = (.local, .pending, nil)
+                if let groupEnv = envs.first {
+                    let meshSent = broadcastMesh(groupEnv)
+                    var nodeSent = false
+                    for member in group.members where member != core.fingerprintHex() {
+                        guard let c = contact(member) else { continue }
+                        if node.send(envelope: groupEnv, to: c.mailbox) { nodeSent = true } else {
+                            enqueue(groupEnv, mailbox: c.mailbox, peer: member, messageId: message.id)
+                        }
+                    }
+                    if nodeSent { best = (.node, .sent, nil) } else if meshSent > 0 { best = (.mesh, .sent, meshSent) }
+                }
+                for env in envs.dropFirst() {
+                    guard let tag = core.envelopeTagHex(env), let member = contacts.first(where: { $0.mailbox == tag }) else { continue }
+                    _ = route(env, to: member, messageId: nil)
+                }
+                update(message.id, transport: best.transport, status: best.status, relays: best.relays)
+            case .channel:
+                guard let name = conv.peer else { return }
+                let env = core.channelEncrypt(name: name, password: nil, appMessageJson: message.json())
+                let n = broadcastMesh(env)
+                update(message.id, transport: .mesh, status: n > 0 ? .delivered : .pending, relays: n)
+            }
+        } catch {
+            update(message.id, transport: .local, status: .failed, relays: nil)
+            banner = error.message
+        }
+    }
+
+    private struct RouteResult {
+        var transport: Transport
+        var status: DeliveryStatus
+        var relays: Int?
+    }
+
+    /// Router: open P2P link (mesh) and node mailbox; when neither is up, the outbox keeps it
+    /// (courier) and the chat offers SMS.
+    private func route(_ env: Data, to contact: ContactJSON, messageId: String?) -> RouteResult {
+        guard let core else { return RouteResult(transport: .local, status: .failed) }
+        var relays = 0
+        if meshPeerCount > 0 {
+            relays = broadcastMesh(core.retagForMesh(envelope: env, fp: contact.fingerprint, nowMs: Clock.nowMs))
+        }
+        if nodeEnabled, node.send(envelope: env, to: contact.mailbox) {
+            return RouteResult(transport: relays > 0 && nodeOnline.contains(contact.mailbox) == false ? .mesh : .node, status: .sent, relays: relays)
+        }
+        // Keep it for the node and for phones met later.
+        enqueue(env, mailbox: contact.mailbox, peer: contact.fingerprint, messageId: messageId)
+        if relays > 0 { return RouteResult(transport: .mesh, status: .sent, relays: relays) }
+        return RouteResult(transport: .local, status: .pending)
+    }
+
+    @discardableResult private func broadcastMesh(_ env: Data) -> Int {
+        guard let meshRouter, meshPeerCount > 0 else { return 0 }
+        mesh.broadcast(meshRouter.framesFor(envelope: env, mtu: MeshTransport.mtu))
+        return meshPeerCount
+    }
+
+    private func enqueue(_ env: Data, mailbox: String, peer: String?, messageId: String?) {
+        db.enqueue(OutboxRecord(id: UUID().uuidString, messageId: messageId, mailbox: mailbox, peer: peer, envelope: env, createdAt: Clock.nowMs, attempts: 0, meshOnly: false))
+    }
+
+    private func update(_ id: String, transport: Transport, status: DeliveryStatus, relays: Int?) {
+        guard var record = db.message(id) else { return }
+        record.transport = transport
+        record.status = status
+        record.relays = relays
+        db.save(record)
+        if let c = db.conversation(record.conversationId), transport != .local {
+            var c = c
+            c.lastTransport = transport
+            db.save(c)
+            reloadConversations()
+        }
+        messageVersion += 1
+    }
+
+    /// Receipts, typing and call signals: not stored.
+    func sendControl(_ message: AppMessage, to fp: String) {
+        guard let core, let contact = contact(fp), let env = try? core.encryptFor(fp: fp, appMessageJson: message.json()) else { return }
+        scheduleSave()
+        if meshPeerCount > 0 { broadcastMesh(core.retagForMesh(envelope: env, fp: fp, nowMs: Clock.nowMs)) }
+        if nodeEnabled { node.send(envelope: env, to: contact.mailbox) }
+    }
+
+    func userIsTyping(in conversationId: String) {
+        guard let conv = db.conversation(conversationId), conv.kind == .direct, let fp = conv.peer else { return }
+        if let last = lastTypingSent[conversationId], Date().timeIntervalSince(last) < 3 { return }
+        lastTypingSent[conversationId] = Date()
+        guard meshPeerCount > 0 || node.isReady else { return }
+        sendControl(AppMessage.make(.typing), to: fp)
+    }
+
+    /// Flushes the outbox to the node and replays it on the mesh.
+    private func flushOutbox(toNode: Bool, toMesh: Bool) {
+        guard let core else { return }
+        for item in db.outbox() {
+            if Clock.nowMs - item.createdAt > 14 * 86_400_000 {
+                db.removeOutbox(item.id)
+                continue
+            }
+            if toMesh, let peer = item.peer {
+                broadcastMesh(core.retagForMesh(envelope: item.envelope, fp: peer, nowMs: Clock.nowMs))
+                if let id = item.messageId { update(id, transport: .mesh, status: .sent, relays: meshPeerCount) }
+            }
+            if toNode, node.send(envelope: item.envelope, to: item.mailbox) {
+                db.removeOutbox(item.id)
+                if let id = item.messageId, db.message(id)?.status ?? .sent < .sent { update(id, transport: .node, status: .sent, relays: nil) }
+            }
+        }
+    }
+
+    /// The envelope of a pending message as an encrypted SMS link (text only, <= 1 KiB envelope).
+    func smsLink(for messageId: String) -> String? {
+        guard let item = db.outbox().first(where: { $0.messageId == messageId }), item.envelope.count <= 1100 else { return nil }
+        return "https://relay.somalabs.me/m#" + item.envelope.base64url
+    }
+
+    func markSentBySMS(_ messageId: String) {
+        update(messageId, transport: .sms, status: .sent, relays: nil)
+    }
+
+    // MARK: Receiving
+
+    func handleEnvelope(_ env: Data, via transport: Transport, hops: Int? = nil, ingress: String? = nil) {
+        guard let core else { return }
+        let inbound: InboundJSON
+        do {
+            guard let json = try core.open(envelope: env, nowMs: Clock.nowMs), let decoded = JSON.decode(InboundJSON.self, json) else {
+                scheduleSave()
+                return
+            }
+            inbound = decoded
+        } catch {
+            return
+        }
+        scheduleSave()
+        let known = contact(inbound.from) != nil
+        if !known { reloadContacts() }
+        if inbound.channel == nil {
+            routes[inbound.from] = PathInfo(transport: transport, hops: hops, via: ingress, at: Date())
+        }
+        let message = inbound.message
+        switch message.kind {
+        case .receipt:
+            if let receipt = message.receipt {
+                db.updateStatus(ids: receipt.of, to: receipt.state == .read ? .read : .delivered, hops: receipt.hops)
+                for id in receipt.of { db.outbox().filter { $0.messageId == id }.forEach { db.removeOutbox($0.id) } }
+                messageVersion += 1
+            }
+        case .typing:
+            typingUntil[Self.directId(inbound.from)] = Date().addingTimeInterval(5)
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5.2))
+                self?.messageVersion += 0
+                self?.typingUntil = self?.typingUntil.filter { $0.value > Date() } ?? [:]
+            }
+        case .call:
+            if let signal = message.call { calls.handle(signal, from: inbound.from) }
+        case .groupOp, .profile, .reaction:
+            reloadContacts()
+        case .text, .image, .audio, .video, .file:
+            store(inbound, transport: transport, hops: hops)
+        }
+    }
+
+    private func store(_ inbound: InboundJSON, transport: Transport, hops: Int?) {
+        let message = inbound.message
+        let conversationId: String
+        let title: String
+        let kind: ConversationKind
+        let peer: String
+        if let g = inbound.group {
+            conversationId = Self.groupId(g)
+            reloadContacts()
+            title = groups.first { $0.id == g }?.name ?? "Groupe"
+            kind = .group
+            peer = g
+        } else if let ch = inbound.channel {
+            conversationId = Self.channelId(ch)
+            title = "#" + ch
+            kind = .channel
+            peer = ch
+        } else {
+            conversationId = Self.directId(inbound.from)
+            title = name(of: inbound.from)
+            kind = .direct
+            peer = inbound.from
+        }
+        if db.conversation(conversationId) == nil {
+            db.save(ConversationRecord(id: conversationId, kind: kind, title: title, peer: peer, lastAt: message.ts, unread: 0, lastTransport: transport, previewSealed: nil))
+        }
+        guard !db.hasMessage(message.id) else { return }
+        let record = MessageRecord(
+            id: message.id, conversationId: conversationId, sender: inbound.from, ts: message.ts, kind: message.kind.rawValue,
+            bodySealed: SecretBox.shared.seal(message.json()), status: .delivered, transport: transport, hops: hops, relays: nil,
+            replyTo: message.replyTo, mediaPath: nil)
+        db.save(record)
+        typingUntil[conversationId] = nil
+        let preview = Self.previewText(message)
+        touch(conversationId, preview: kind == .direct ? preview : "\(name(of: inbound.from)) : \(preview)", transport: transport, incoming: activeConversation != conversationId)
+        if message.attachment != nil { fetchAttachment(of: message, recordId: record.id) }
+        if kind == .direct {
+            var receipt = AppMessage.make(.receipt)
+            receipt.receipt = .init(of: [message.id], state: activeConversation == conversationId ? .read : .delivered, hops: hops)
+            sendControl(receipt, to: inbound.from)
+        }
+        if activeConversation == conversationId {
+            Haptics.soft()
+        } else {
+            notify(title: title, body: preview)
+        }
+        messageVersion += 1
+    }
+
+    static func previewText(_ message: AppMessage) -> String {
+        switch message.kind {
+        case .text: message.text ?? ""
+        case .image: "Photo"
+        case .audio: "Note vocale"
+        case .video: "Vidéo"
+        case .file: message.attachment?.name ?? "Fichier"
+        default: ""
+        }
+    }
+
+    private func touch(_ conversationId: String, preview: String, transport: Transport?, incoming: Bool) {
+        guard var c = db.conversation(conversationId) else { return }
+        c.lastAt = Clock.nowMs
+        c.previewSealed = SecretBox.shared.seal(preview)
+        if let transport { c.lastTransport = transport }
+        if incoming { c.unread += 1 }
+        db.save(c)
+        reloadConversations()
+        messageVersion += 1
+    }
+
+    private func notify(title: String, body: String) {
+        guard UIApplication.shared.applicationState != .active else {
+            Haptics.tap()
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    // MARK: Contacts
+
+    /// `relay1:` card, `relay1c:` compact link, `somarelay://add/...` link or `handle@node`.
+    func addContact(from input: String) async throws -> ContactJSON {
+        guard let core else { throw RelayCoreError.unknown("Pas d'identité.") }
+        var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("somarelay://add/") { text = String(text.dropFirst("somarelay://add/".count)) }
+        if text.hasPrefix("relay1:") {
+            return try adopt(core.addContact(card: text))
+        }
+        if text.hasPrefix("relay1c:") {
+            guard let compact = JSON.decode(CompactJSON.self, try core.parseCompactLink(text)) else { throw RelayCoreError.malformed("Lien illisible.") }
+            // In mesh range: ask the phone directly. Else: the node directory.
+            if let peer = nearby.first(where: { $0.compactLink.map { Self.fingerprint(ofCompact: $0, core: core) } == compact.fingerprint && $0.connected }) {
+                mesh.sendControl(MeshControl(t: "card-req", card: myCard), to: peer.id)
+                throw RelayCoreError.unknown("Demande envoyée par le mesh, la carte arrive.")
+            }
+            let nodeURL = compact.nodeUrl.flatMap(URL.init(string:))
+            let mailbox = Self.mailbox(of: compact.fingerprint, core: core)
+            let card = try await node.card(mailbox: mailbox, on: nodeURL)
+            let added = try adopt(core.addContact(card: card))
+            guard added.fingerprint == compact.fingerprint else {
+                core.removeContact(fp: added.fingerprint)
+                throw RelayCoreError.invalidCard("La carte ne correspond pas à l'empreinte du QR.")
+            }
+            return added
+        }
+        if text.contains("@") {
+            let parts = text.split(separator: "@", maxSplits: 1).map(String.init)
+            let nodeHost = parts.count > 1 ? parts[1] : ""
+            let url = nodeHost.isEmpty ? nil : URL(string: nodeHost.hasPrefix("http") ? nodeHost : "https://" + nodeHost)
+            let card = try await node.lookup(handle: parts[0], on: url)
+            return try adopt(core.addContact(card: card))
+        }
+        throw RelayCoreError.malformed("Colle une carte relay1:, un lien relay1c: ou un pseudo@nœud.")
+    }
+
+    private func adopt(_ json: String) throws -> ContactJSON {
+        guard let contact = JSON.decode(ContactJSON.self, json) else { throw RelayCoreError.malformed("Contact illisible.") }
+        scheduleSave()
+        reloadContacts()
+        openDirect(contact.fingerprint)
+        justAdded = contact
+        Haptics.success()
+        return contact
+    }
+
+    static func fingerprint(ofCompact link: String, core: RelayCoreAPI) -> String? {
+        (try? core.parseCompactLink(link)).flatMap { JSON.decode(CompactJSON.self, $0)?.fingerprint }
+    }
+
+    /// First 16 bytes of SHA3-256("soma-relay/mailbox" || fp) in the real core; the mock uses SHA-256.
+    static func mailbox(of fp: String, core: RelayCoreAPI) -> String {
+        MailboxHash.mailbox(fp: fp, mock: core is MockRelayCore)
+    }
+
+    func requestCard(from peer: NearbyPeer) {
+        mesh.sendControl(MeshControl(t: "card-req", card: myCard), to: peer.id)
+        banner = "Demande envoyée à \(peer.name ?? peer.code)."
+    }
+
+    func setVerified(_ fp: String, _ verified: Bool) {
+        core?.setVerified(fp: fp, verified: verified)
+        scheduleSave()
+        reloadContacts()
+        if verified { Haptics.success() }
+    }
+
+    func rename(_ fp: String, to name: String) {
+        core?.renameContact(fp: fp, name: name)
+        scheduleSave()
+        reloadContacts()
+        if var c = db.conversation(Self.directId(fp)) {
+            c.title = name
+            db.save(c)
+            reloadConversations()
+        }
+    }
+
+    func removeContact(_ fp: String) {
+        core?.removeContact(fp: fp)
+        scheduleSave()
+        deleteConversation(Self.directId(fp))
+        reloadContacts()
+    }
+
+    func safetyWords(with fp: String) -> [String] {
+        if demo { return DemoData.callWords }
+        return core?.contactSafetyWords(fp: fp) ?? []
+    }
+
+    func safetyCode(with fp: String) -> String { core?.contactSafetyCode(fp: fp) ?? "" }
+
+    // MARK: Groups and channels
+
+    func createGroup(name: String, members: [String]) throws -> String {
+        guard let core else { throw RelayCoreError.unknown("Pas d'identité.") }
+        let gid = try core.createGroup(name: name, memberFps: members)
+        scheduleSave()
+        reloadContacts()
+        let id = Self.groupId(gid)
+        db.save(ConversationRecord(id: id, kind: .group, title: name, peer: gid, lastAt: Clock.nowMs, unread: 0, lastTransport: nil, previewSealed: SecretBox.shared.seal("Groupe créé")))
+        reloadConversations()
+        return id
+    }
+
+    func joinChannel(_ raw: String) -> String {
+        let name = raw.trimmingCharacters(in: CharacterSet(charactersIn: "# ").union(.whitespaces)).lowercased()
+        guard !name.isEmpty else { return "" }
+        core?.joinChannel(name: name, password: nil)
+        scheduleSave()
+        if !channels.contains(name) { channels.append(name) }
+        UserDefaults.standard.set(channels, forKey: "channels")
+        let id = Self.channelId(name)
+        if db.conversation(id) == nil {
+            db.save(ConversationRecord(id: id, kind: .channel, title: "#" + name, peer: name, lastAt: Clock.nowMs, unread: 0, lastTransport: .mesh, previewSealed: nil))
+        }
+        reloadConversations()
+        return id
+    }
+
+    func leaveChannel(_ name: String) {
+        core?.leaveChannel(name: name)
+        channels.removeAll { $0 == name }
+        UserDefaults.standard.set(channels, forKey: "channels")
+        deleteConversation(Self.channelId(name))
+    }
+
+    // MARK: Identity
+
+    func setDisplayName(_ name: String) {
+        core?.setDisplayName(name)
+        scheduleSave()
+        restartMesh()
+    }
+
+    func publishHandle() async throws {
+        guard let core, let card = myCard, !handle.isEmpty else { return }
+        (core as? MockRelayCore)?.setHandle(handle, node: nodeURL)
+        guard let sig = core.signDetached(Data(card.utf8)) else {
+            throw RelayCoreError.unknown("Le cœur ne sait pas encore signer l'annuaire.")
+        }
+        try await node.publish(handle: handle, card: card, mailbox: core.mailboxHex(), signature: sig)
+    }
+
+    /// Sealed export of the engine state, for a backup the user keeps.
+    func exportIdentity() -> URL? {
+        guard let core else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("soma-relay-identite.relaykey")
+        let payload = "relaystate1:" + core.exportState().base64url
+        try? Data(payload.utf8).write(to: url, options: [.atomic, .completeFileProtection])
+        return url
+    }
+
+    /// Emergency wipe: keys, database, media, then back to onboarding.
+    func wipe() {
+        node.disconnect()
+        mesh.stop()
+        calls.endAll()
+        db.wipe()
+        MediaStore.wipe()
+        SecretBox.destroyKey()
+        for key in ["handle", "channels", "nodeURL"] { UserDefaults.standard.removeObject(forKey: key) }
+        core = nil
+        contacts = []
+        groups = []
+        conversations = []
+        channels = []
+        routes = [:]
+        withAnimation(.smooth) { phase = .onboarding }
+    }
+
+    // MARK: Links
+
+    func handle(url: URL) {
+        let text = url.absoluteString
+        if text.hasPrefix("somarelay://add/") {
+            Task { _ = try? await addContact(from: text) }
+            return
+        }
+        var payload: String?
+        if let fragment = url.fragment, !fragment.isEmpty { payload = fragment }
+        else if url.host() == "m" { payload = url.path().trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+        guard let payload, let env = Data(base64url: payload) else { return }
+        handleEnvelope(env, via: .sms)
+        banner = "Message SMS chiffré importé."
+    }
+}
+
+// MARK: - Transport delegates
+
+extension AppModel: MeshTransportDelegate {
+    func mesh(_ mesh: MeshTransport, received frame: Data, fromLink link: UInt32, peerCode: String) {
+        guard let meshRouter else { return }
+        let result = meshRouter.onFrame(frame, fromLink: link, nowMs: Clock.nowMs)
+        if !result.forward.isEmpty {
+            mesh.broadcast(result.forward, excluding: result.excludeLink, jitter: true)
+        }
+        if let env = result.complete {
+            handleEnvelope(env, via: .mesh, hops: result.hops, ingress: peerCode)
+        }
+    }
+
+    func mesh(_ mesh: MeshTransport, control: MeshControl, from peer: String) {
+        guard let core else { return }
+        switch control.t {
+        case "card-req":
+            if let card = control.card, let json = try? core.addContact(card: card), let c = JSON.decode(ContactJSON.self, json) {
+                scheduleSave()
+                reloadContacts()
+                openDirect(c.fingerprint)
+                justAdded = c
+            }
+            mesh.sendControl(MeshControl(t: "card", card: myCard), to: peer)
+        case "card":
+            if let card = control.card, let json = try? core.addContact(card: card), let c = JSON.decode(ContactJSON.self, json) {
+                scheduleSave()
+                reloadContacts()
+                openDirect(c.fingerprint)
+                justAdded = c
+                Haptics.success()
+            }
+        default:
+            break
+        }
+    }
+
+    func meshPeersChanged(_ mesh: MeshTransport) {
+        let before = meshPeerCount
+        meshPeerCount = mesh.connectedCount
+        nearby = mesh.peers
+        if meshPeerCount > before { flushOutbox(toNode: false, toMesh: true) }
+    }
+}
+
+extension AppModel: NodeClientDelegate {
+    func node(_ node: NodeClient, received envelope: Data) {
+        handleEnvelope(envelope, via: .node)
+    }
+
+    func nodeStateChanged(_ node: NodeClient) {
+        nodeState = node.state
+        if node.isReady {
+            flushOutbox(toNode: true, toMesh: false)
+            node.queryPresence(contacts.map(\.mailbox))
+        }
+    }
+
+    func node(_ node: NodeClient, presence online: Set<String>) {
+        nodeOnline = online
+    }
+}
+
+nonisolated extension DeliveryStatus: Comparable {
+    static func < (a: DeliveryStatus, b: DeliveryStatus) -> Bool { AppDatabase.rank(a) < AppDatabase.rank(b) }
+}
