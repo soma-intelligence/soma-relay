@@ -203,7 +203,7 @@ struct ChatView: View {
         let day: String
         if Calendar.current.isDateInToday(date) { day = "AUJOURD'HUI" }
         else if Calendar.current.isDateInYesterday(date) { day = "HIER" }
-        else { day = date.formatted(.dateTime.day().month(.abbreviated)).uppercased() }
+        else { day = date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "fr_FR"))).uppercased() }
         let time = date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
         switch kind {
         case .channel: return "\(day) \(time) · ED25519 · NON CHIFFRÉ"

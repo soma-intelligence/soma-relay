@@ -100,7 +100,9 @@ struct Avatar: View {
 
     var initials: String {
         let parts = name.replacingOccurrences(of: "#", with: "").split(separator: " ")
-        let letters = parts.prefix(2).compactMap(\.first).map(String.init).joined()
+        let letters = parts.count == 1
+            ? String(parts[0].prefix(2))
+            : parts.prefix(2).compactMap(\.first).map(String.init).joined()
         return letters.isEmpty ? "?" : letters.uppercased()
     }
 
@@ -294,6 +296,7 @@ struct LinkStatusPill: View {
         .foregroundStyle(Theme.secondary)
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
+        .fixedSize()
         .glassEffect(.regular, in: Capsule())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(

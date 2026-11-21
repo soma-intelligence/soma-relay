@@ -61,6 +61,7 @@ struct ConversationsView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     LinkStatusPill()
                 }
+                .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Ajouter un contact", systemImage: "person.badge.plus") { showAddContact = true }
@@ -181,8 +182,8 @@ struct ConversationRow: View {
 
     static func time(_ ms: Int64) -> String {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        if Calendar.current.isDateInToday(date) { return date.formatted(.dateTime.hour().minute()) }
+        if Calendar.current.isDateInToday(date) { return date.formatted(.dateTime.hour().minute().locale(Locale(identifier: "fr_FR"))) }
         if Calendar.current.isDateInYesterday(date) { return "hier" }
-        return date.formatted(.dateTime.day().month(.abbreviated))
+        return date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "fr_FR")))
     }
 }
