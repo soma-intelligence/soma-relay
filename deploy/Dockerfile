@@ -1,6 +1,4 @@
-# syntax=docker/dockerfile:1.7
-#
-# Soma Relay node. Build from the repository root:
+# Soma Relay node. Works with the classic builder and with BuildKit. From the repo root:
 #   docker build -f deploy/Dockerfile -t soma-relay-node .
 # Multi-arch:
 #   docker buildx build -f deploy/Dockerfile --platform linux/amd64,linux/arm64 -t soma-relay-node .
@@ -10,13 +8,15 @@ ARG RUST_VERSION=1
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS build
 WORKDIR /src
-COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target,sharing=locked \
-    cargo build --release -p relay-node \
+# Only what the build needs (never the host target/ or node_modules/).
+COPY Cargo.toml Cargo.loc[k] ./
+COPY crates ./crates
+# web/dist is optional: the wildcard matches nothing when it is absent, and Cargo.toml rides
+# along so the COPY always has one source. It is removed right after.
+COPY Cargo.toml web/dis[t] /out/web/
+RUN rm /out/web/Cargo.toml && mkdir -p /out/data
+RUN cargo build --release -p relay-node \
     && install -D target/release/relay-node /out/relay-node
-RUN mkdir -p /out/web /out/data \
-    && if [ -d web/dist ]; then cp -R web/dist/. /out/web/; fi
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /out/relay-node /usr/local/bin/relay-node

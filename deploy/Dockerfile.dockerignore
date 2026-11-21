@@ -1,6 +1,8 @@
 # Build context is the repository root; keep it small.
 **/target
 **/node_modules
+web/*
+!web/dist
 apple
 .git
 web/src/core/pkg

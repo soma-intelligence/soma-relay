@@ -17,6 +17,9 @@ curl http://localhost:8080/healthz
 ```
 
 Data (SQLite database and blobs) lives in the `relay-data` volume, mounted at `/data`.
+The image is about 12 MB (distroless, non-root). The Dockerfile works with the classic
+builder and with BuildKit; BuildKit (buildx) also honours `Dockerfile.dockerignore` and
+skips sending the host `target/` directory, which makes builds much faster.
 
 To serve the web client too, build it before the image so `web/dist` exists:
 
