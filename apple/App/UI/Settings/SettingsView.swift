@@ -38,6 +38,23 @@ struct SettingsView: View {
                     Text("Ils résument ta clé publique. Pour vérifier un contact, comparez plutôt les mots de sa fiche : ils dépendent de vos deux clés.")
                 }
                 Section {
+                    Toggle("Aperçus dans les notifications", isOn: $model.notificationPreviews)
+                    Button("Réglages des notifications iOS", systemImage: "bell.badge") {
+                        if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Désactivé : « Nouveau message », sans nom ni texte. Le nœud ne voit jamais le contenu : il réveille seulement l'app, qui déchiffre sur ton téléphone.")
+                }
+                Section {
+                    Toggle("Aperçus des liens", isOn: $model.linkPreviews)
+                } header: {
+                    Text("Messages")
+                } footer: {
+                    Text("Ton téléphone prépare l'aperçu d'un lien avant l'envoi. Ton contact ne charge rien.")
+                }
+                Section {
                     Toggle("Visible à proximité", isOn: $model.visibleNearby)
                     LabeledContent("Téléphones reliés", value: "\(model.meshPeerCount)")
                 } header: {

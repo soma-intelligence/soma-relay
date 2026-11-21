@@ -8,16 +8,27 @@ struct ConversationsView: View {
     @State private var showNewGroup = false
     @State private var showJoinChannel = false
     @State private var showAddContact = false
+    @State private var query = ""
+    @State private var hits: [SearchHit] = []
 
     enum Section: String, CaseIterable { case chats = "Discussions", channels = "Canaux locaux" }
 
     private var rows: [ConversationRecord] {
-        model.conversations.filter { section == .channels ? $0.kind == .channel : $0.kind != .channel }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !q.isEmpty {
+            return model.conversations.filter { $0.title.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+        }
+        return model.conversations.filter { section == .channels ? $0.kind == .channel : $0.kind != .channel }
     }
+
+    private var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                if isSearching {
+                    searchResults
+                } else {
                 SwiftUI.Section {
                     Picker("Afficher", selection: $section) {
                         ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -48,13 +59,33 @@ struct ConversationsView: View {
                             Label(conversation.kind == .channel ? "Quitter" : "Supprimer", systemImage: "trash")
                         }
                     }
+                    .swipeActions(edge: .leading) {
+                        if conversation.isMuted() {
+                            Button { model.mute(conversation.id, for: 0) } label: { Label("Réactiver", systemImage: "bell") }
+                                .tint(Theme.mesh)
+                        } else {
+                            Button { model.mute(conversation.id, for: 8 * 3600) } label: { Label("Sourdine 8 h", systemImage: "bell.slash") }
+                                .tint(Color(UIColor(hex: 0x5B636E, alpha: 1)))
+                        }
+                    }
                 }
+                }
+            }
+            .searchable(text: $query, prompt: "Noms et messages")
+            .task(id: query) {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                hits = model.search(query)
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(Theme.background)
             .overlay {
-                if rows.isEmpty { empty }
+                if isSearching {
+                    if rows.isEmpty && hits.isEmpty { ContentUnavailableView.search(text: query) }
+                } else if rows.isEmpty {
+                    empty
+                }
             }
             .navigationTitle(section == .chats ? "Conversations" : "Canaux")
             .toolbar {
@@ -76,6 +107,9 @@ struct ConversationsView: View {
             .navigationDestination(for: String.self) { id in
                 ChatView(conversationId: id)
             }
+            .navigationDestination(for: ChatRoute.self) { route in
+                ChatView(conversationId: route.conversationId, focus: route.focus)
+            }
             .sheet(isPresented: $showAddContact) { AddContactView() }
             .sheet(isPresented: $showNewGroup) {
                 NewGroupView { id in path.append(id) }
@@ -93,9 +127,27 @@ struct ConversationsView: View {
             }
         }
         .onAppear {
-            if DemoData.screen == "chat" || DemoData.screen == "chat-dark", path.isEmpty {
+            guard path.isEmpty, let screen = DemoData.screen else { return }
+            switch screen {
+            case "chat", "chat-dark", "edit":
                 path.append(AppModel.directId(DemoData.ines))
+            case "group", "attach", "poll-new", "location", "map", "search", "reactions":
+                path.append(AppModel.groupId("stand"))
+            case "files", "document":
+                path.append(AppModel.directId(DemoData.malik))
+            case "list-search":
+                query = "plan"
+            default:
+                break
             }
+        }
+        .onChange(of: model.openRequest) { _, request in
+            guard let request else { return }
+            // An open chat handles its own request (scroll to the message).
+            if let active = model.activeConversation, active == request.conversationId { return }
+            model.openRequest = nil
+            path = NavigationPath()
+            path.append(ChatRoute(conversationId: request.conversationId, focus: request.focus))
         }
     }
 
@@ -112,6 +164,50 @@ struct ConversationsView: View {
                 systemImage: "number",
                 action: ("Rejoindre un canal", { showJoinChannel = true }))
         }
+    }
+}
+
+extension ConversationsView {
+    @ViewBuilder fileprivate var searchResults: some View {
+        if !rows.isEmpty {
+            SwiftUI.Section("Conversations") {
+                ForEach(rows) { conversation in
+                    NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation) }
+                        .listRowBackground(Color.clear)
+                }
+            }
+        }
+        if !hits.isEmpty {
+            SwiftUI.Section("Messages") {
+                ForEach(hits) { hit in
+                    NavigationLink(value: ChatRoute(conversationId: hit.conversationId, focus: hit.messageId)) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(hit.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                                Spacer()
+                                Text(ConversationRow.time(hit.ts)).font(Theme.mono(11)).foregroundStyle(Theme.secondary)
+                            }
+                            Text(highlighted(hit.snippet))
+                                .font(.subheadline)
+                                .foregroundStyle(Theme.secondary)
+                                .lineLimit(2)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .listRowBackground(Color.clear)
+                }
+            }
+        }
+    }
+
+    fileprivate func highlighted(_ text: String) -> AttributedString {
+        var out = AttributedString(text)
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let r = out.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) {
+            out[r].foregroundColor = Theme.text
+            out[r].font = .subheadline.weight(.semibold)
+        }
+        return out
     }
 }
 
@@ -151,6 +247,18 @@ struct ConversationRow: View {
                         .font(.body.weight(conversation.unread > 0 ? .semibold : .medium))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
+                    if conversation.isMuted() {
+                        Image(systemName: "bell.slash.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.secondary)
+                            .accessibilityLabel("en sourdine")
+                    }
+                    if conversation.expireS > 0 {
+                        Image(systemName: "timer")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.secondary)
+                            .accessibilityLabel("messages éphémères")
+                    }
                     Spacer(minLength: 6)
                     Text(Self.time(conversation.lastAt))
                         .font(Theme.mono(11))
@@ -170,7 +278,7 @@ struct ConversationRow: View {
                             .foregroundStyle(Theme.onMesh)
                             .padding(.horizontal, 7)
                             .frame(minWidth: 22, minHeight: 22)
-                            .background(Theme.mesh, in: Capsule())
+                            .background(conversation.isMuted() ? Theme.dashed : Theme.mesh, in: Capsule())
                     }
                 }
             }
