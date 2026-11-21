@@ -265,7 +265,7 @@ async fn bots_exchange_messages_through_a_node() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let hits = hits.lock().unwrap();
+    let hits = hits.lock().unwrap().clone();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[1]["message"]["text"], "from charlie");
 

@@ -1,0 +1,52 @@
+# Soma Relay node. Run from this directory:
+#   docker compose up -d                          node only, http://localhost:8080
+#   RELAY_HOST=relay.example.org docker compose --profile tls up -d     node + Caddy (HTTPS)
+#   docker compose --profile turn up -d           also start coturn (see README)
+
+services:
+  relay-node:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: soma-relay-node:latest
+    restart: unless-stopped
+    environment:
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
+      RELAY_TRUST_PROXY: ${RELAY_TRUST_PROXY:-false}
+      RELAY_RATE_PER_SEC: ${RELAY_RATE_PER_SEC:-20}
+      RELAY_RATE_BURST: ${RELAY_RATE_BURST:-100}
+      RELAY_ICE_JSON: ${RELAY_ICE_JSON:-}
+      RELAY_LOG: ${RELAY_LOG:-relay_node=info}
+    ports:
+      - "${RELAY_PORT:-8080}:8080"
+    volumes:
+      - relay-data:/data
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [relay-node]
+    environment:
+      RELAY_HOST: ${RELAY_HOST:-relay.example.org}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  coturn:
+    profiles: ["turn"]
+    image: coturn/coturn:4
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

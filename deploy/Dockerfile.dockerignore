@@ -1,0 +1,10 @@
+# Build context is the repository root; keep it small.
+**/target
+**/node_modules
+apple
+.git
+web/src/core/pkg
+*.p8
+.env*
+bot-state.bin*
+relay-data

@@ -1,0 +1,6 @@
+# TLS in front of relay-node. Set RELAY_HOST to your host name, point its DNS at this
+# machine, open ports 80 and 443. Caddy gets and renews the certificate on its own.
+{$RELAY_HOST:relay.example.org} {
+	encode zstd gzip
+	reverse_proxy relay-node:8080
+}
