@@ -26,13 +26,17 @@ impl Node {
     }
 
     async fn start_with(tune: impl FnOnce(&mut Config)) -> Self {
+        Self::start_full(tune, std::sync::Arc::new(relay_node::verifier::PermissiveVerifier)).await
+    }
+
+    async fn start_full(tune: impl FnOnce(&mut Config), verifier: std::sync::Arc<dyn relay_node::verifier::CardVerifier>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let web = dir.path().join("web");
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("index.html"), "<!doctype html><title>relay</title>").unwrap();
         let mut config = Config::for_data_dir(dir.path().to_path_buf());
         tune(&mut config);
-        let state = NodeState::open(config).unwrap();
+        let state = NodeState::with_verifier(config, verifier).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -425,4 +429,37 @@ async fn http_rate_limit() {
     let r = http.get(node.http("/v1/ice")).send().await.unwrap();
     assert_eq!(r.status(), 429);
     assert_eq!(r.headers()["retry-after"], "1");
+}
+
+#[tokio::test]
+async fn core_verifier_accepts_real_cards_only() {
+    use relay_core::RelayEngine;
+
+    let node = Node::start_full(|_| {}, std::sync::Arc::new(relay_node::verifier::CoreCardVerifier)).await;
+    let http = reqwest::Client::new();
+    let mut eng = RelayEngine::create_with_seed("ada".into(), [42; 32]);
+    let mailbox: [u8; 16] = hex::decode(eng.mailbox_hex()).unwrap().try_into().unwrap();
+
+    // Authenticate with the engine's own key and signature.
+    let mut c = Client { ws: Client::connect_raw(&node).await, key: SigningKey::from_bytes(&[0; 32]) };
+    c.send(json!({"t": "hello", "mailbox": eng.mailbox_hex(), "pub": b64(&eng.device_signing_public())})).await;
+    let ch = c.recv().await;
+    let nonce = unb64(ch["nonce"].as_str().unwrap());
+    c.send(json!({"t": "auth", "sig": b64(&eng.sign_node_challenge(&nonce))})).await;
+    assert_eq!(c.recv().await["t"], "ready");
+
+    // A fake card is refused.
+    c.send(json!({"t": "register", "card": b64(b"relay1:not-a-card")})).await;
+    assert_eq!(c.recv().await["code"], "card_rejected");
+    // Someone else's real card is refused (wrong mailbox and key).
+    let mut other = RelayEngine::create_with_seed("eve".into(), [7; 32]);
+    let foreign = other.my_card(None, None);
+    c.send(json!({"t": "register", "card": b64(foreign.as_bytes())})).await;
+    assert_eq!(c.recv().await["code"], "card_rejected");
+    // The real card is accepted and published.
+    let card = eng.my_card(Some(format!("http://{}", node.addr)), None);
+    c.send(json!({"t": "register", "card": b64(card.as_bytes())})).await;
+    assert_eq!(c.recv().await["t"], "registered");
+    let r = http.get(node.http(&format!("/v1/cards/{}", hex::encode(mailbox)))).send().await.unwrap();
+    assert_eq!(r.text().await.unwrap(), card);
 }

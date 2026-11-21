@@ -1,4 +1,7 @@
 use clap::Parser;
+use std::sync::Arc;
+
+use relay_node::verifier::CoreCardVerifier;
 use relay_node::{Config, NodeState, serve, shutdown_signal};
 
 #[tokio::main]
@@ -18,6 +21,6 @@ async fn main() -> anyhow::Result<()> {
         public_url = config.public_url.as_deref().unwrap_or("-"),
         "relay-node listening"
     );
-    let state = NodeState::open(config)?;
+    let state = NodeState::with_verifier(config, Arc::new(CoreCardVerifier))?;
     serve(listener, state, shutdown_signal()).await
 }

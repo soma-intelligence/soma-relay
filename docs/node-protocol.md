@@ -93,9 +93,13 @@ node   -> {"t":"registered"}
 
 The card is the client's contact card, usually the UTF-8 bytes of the `relay1:...` text form.
 It becomes public at `GET /v1/cards/{mailbox}`. Registering again replaces it (for example
-after a prekey rotation). Cards pass through the node's card verifier: a node may refuse a
-card whose hybrid signature does not verify or that does not hash to the mailbox
-(`card_rejected`). Requires auth.
+after a prekey rotation). Requires auth. The reference node checks every card it accepts
+(here and in the directory) and answers `card_rejected` unless all of these hold:
+
+- the bytes are a `relay1:` card that parses and whose hybrid signature (Ed25519 + ML-DSA-87)
+  verifies,
+- `SHA3-256("soma-relay/mailbox" || fingerprint)[..16]` of the card equals the mailbox,
+- the card's Ed25519 key equals the key bound to the mailbox at auth.
 
 ### 3. Sending
 
