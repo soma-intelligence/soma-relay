@@ -4,7 +4,7 @@
 // ../../web/src/core/pkg`. It is optional at build time: import.meta.glob returns an empty
 // map when the file does not exist, and the client falls back to the MockEngine.
 //
-// The adapter is lenient about return shapes: JSON strings are parsed, `undefined` maps to
+// now_ms is a JS number (the Rust side takes f64 and casts). The adapter is lenient about return shapes: JSON strings are parsed, `undefined` maps to
 // null, and arrays of byte arrays may come back as a JS array of Uint8Array.
 
 import type {
@@ -59,24 +59,33 @@ function strings(v: unknown): string[] {
   return []
 }
 
+const KINDS: Record<string, number> = { direct: 1, group: 2, channel: 3, announce: 4, control: 5 }
+
 const ERROR_CODES = ['InvalidCard', 'KeyChanged', 'NoSession', 'Decrypt', 'Malformed', 'Unknown', 'Storage', 'Group'] as const
 
 function wrapError(e: unknown): RelayError {
   if (e instanceof RelayError) return e
   const msg = e instanceof Error ? e.message : String(e)
-  const code = ERROR_CODES.find((c) => msg.includes(c)) ?? 'Unknown'
+  const name = e instanceof Error ? e.name : ''
+  const code = ERROR_CODES.find((c) => c === name) ?? ERROR_CODES.find((c) => msg.includes(c)) ?? 'Unknown'
   return new RelayError(code, msg)
 }
 
 class WasmEngineImpl implements Engine {
   readonly kind = 'wasm' as const
-  constructor(private raw: Raw) {}
+  constructor(
+    private raw: Raw,
+    private cls: RawClass,
+  ) {}
 
+  /** Instance method, or a static one on the class (open_attachment has no self in Rust). */
   private call(name: string, ...args: unknown[]): unknown {
-    const fn = this.raw[name]
-    if (typeof fn !== 'function') throw new RelayError('Unknown', `core method ${name} missing`)
+    const own = this.raw[name]
+    const stat = (this.cls as unknown as Record<string, unknown>)[name]
+    const fn = typeof own === 'function' ? own : typeof stat === 'function' ? (stat as (...a: unknown[]) => unknown) : null
+    if (!fn) throw new RelayError('Unknown', `core method ${name} missing`)
     try {
-      return fn.apply(this.raw, args)
+      return fn.apply(fn === own ? this.raw : this.cls, args)
     } catch (e) {
       throw wrapError(e)
     }
@@ -93,7 +102,7 @@ class WasmEngineImpl implements Engine {
   myCompactLink = (nodeUrl?: string | null) => String(this.call('myCompactLink', nodeUrl ?? undefined))
   deviceSigningPublic = () => bytes(this.call('deviceSigningPublic'))
   signNodeChallenge = (nonce: Uint8Array) => bytes(this.call('signNodeChallenge', nonce))
-  rotatePrekeyIfDue = (nowMs: number) => Boolean(this.call('rotatePrekeyIfDue', BigInt(nowMs)))
+  rotatePrekeyIfDue = (nowMs: number) => Boolean(this.call('rotatePrekeyIfDue', nowMs))
 
   addContact = (card: string) => json<Contact>(this.call('addContact', card))
   addContactReplacing = (card: string) => json<Contact>(this.call('addContactReplacing', card))
@@ -106,11 +115,11 @@ class WasmEngineImpl implements Engine {
   contactSafetyCode = (fp: string) => String(this.call('contactSafetyCode', fp))
 
   encryptFor = (fp: string, m: AppMessage) => bytes(this.call('encryptFor', fp, JSON.stringify(m)))
-  meshTagFor = (fp: string, nowMs: number) => bytes(this.call('meshTagFor', fp, BigInt(nowMs)))
+  meshTagFor = (fp: string, nowMs: number) => bytes(this.call('meshTagFor', fp, nowMs))
   retagForMesh = (env: Uint8Array, fp: string, nowMs: number) =>
-    bytes(this.call('retagForMesh', env, fp, BigInt(nowMs)))
+    bytes(this.call('retagForMesh', env, fp, nowMs))
   open = (env: Uint8Array, nowMs: number): Inbound | null => {
-    const r = this.call('open', env, BigInt(nowMs))
+    const r = this.call('open', env, nowMs)
     if (r === undefined || r === null || r === '') return null
     return json<Inbound>(r)
   }
@@ -133,8 +142,25 @@ class WasmEngineImpl implements Engine {
 
   callKey = (fp: string, callId: string) => bytes(this.call('callKey', fp, callId))
 
-  /** Postcard v1 envelope: v u8, kind u8, tag [u8;16], ttl u8, id [u8;16], body. */
+  get signDetached(): ((m: Uint8Array) => Uint8Array) | undefined {
+    if (typeof this.raw.signDetached !== 'function') return undefined
+    return (m: Uint8Array) => bytes(this.call('signDetached', m))
+  }
+
+  /**
+   * From the core's envelopeInfo() when present, else the postcard v1 header read by hand
+   * (v u8, kind u8, tag [u8;16], ttl u8, id [u8;16], body).
+   */
   envelopeHeader(env: Uint8Array): EnvelopeHeader | null {
+    if (typeof this.raw.envelopeInfo === 'function') {
+      try {
+        const info = json<{ id: string; kind: string | number; tag: string }>(this.raw.envelopeInfo(env))
+        const kind = typeof info.kind === 'number' ? info.kind : (KINDS[info.kind] ?? 0)
+        return { kind, tag: info.tag, id: info.id }
+      } catch {
+        return null
+      }
+    }
     if (env.length < 35 || env[0] !== 1) return null
     return { kind: env[1], tag: toHex(env.slice(2, 18)), id: toHex(env.slice(19, 35)) }
   }
@@ -151,14 +177,14 @@ export async function loadWasmFactory(): Promise<EngineFactory | null> {
       kind: 'wasm',
       create: (name) => {
         try {
-          return new WasmEngineImpl(cls.create(name))
+          return new WasmEngineImpl(cls.create(name), cls)
         } catch (e) {
           throw wrapError(e)
         }
       },
       restore: (state) => {
         try {
-          return new WasmEngineImpl(cls.restore(state))
+          return new WasmEngineImpl(cls.restore(state), cls)
         } catch (e) {
           throw wrapError(e)
         }

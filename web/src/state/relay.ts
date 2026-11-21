@@ -169,8 +169,9 @@ export class Relay {
       this.store = await Storage.open()
       this.factory = await loadEngineFactory()
       const settings = this.snap.settings
-      // The mock cannot authenticate to a real node: the local bus carries it by default.
-      if (this.factory.kind === 'mock' && localGet('settings') === null) settings.localBus = true
+      // The mock cannot authenticate to a real node, and the dev server has no node: the local
+      // bus between tabs is on by default there.
+      if ((this.factory.kind === 'mock' || import.meta.env.DEV) && localGet('settings') === null) settings.localBus = true
       this.set({ engineKind: this.factory.kind, settings: { ...settings } })
       const state = await this.store.getBytes('meta', 'engine')
       if (!state) {
@@ -405,19 +406,68 @@ export class Relay {
     try {
       inbound = e.open(env, Date.now())
     } catch (err) {
-      if (!(err instanceof RelayError) || err.code !== 'Malformed') console.warn('open failed', err)
+      if (err instanceof RelayError && err.code === 'NoSession' && this.isGroupEnvelope(env)) this.holdGroup(env, via)
+      else if (!(err instanceof RelayError) || err.code !== 'Malformed') console.warn('open failed', err)
       return
     }
     this.persist()
-    if (!inbound) return
+    if (!inbound) {
+      // A group envelope may arrive before its sender key: keep it and retry later.
+      if (this.isGroupEnvelope(env)) this.holdGroup(env, via)
+      return
+    }
     const knownBefore = this.snap.contacts.some((c) => c.fingerprint === inbound!.from)
-    if (!knownBefore || inbound.group) this.set({ contacts: e.contacts(), groups: e.groups() })
+    if (!knownBefore || inbound.group || inbound.message.kind === 'group-op')
+      this.set({ contacts: e.contacts(), groups: e.groups() })
     void this.dispatch(inbound, via)
+    this.retryHeld()
+  }
+
+  /** Group envelopes waiting for their sender key (relay-core: not marked seen, retry). */
+  private held: { env: Uint8Array; via: Transport; at: number }[] = []
+
+  private isGroupEnvelope(env: Uint8Array): boolean {
+    return this.engine?.envelopeHeader(env)?.kind === 2
+  }
+
+  private holdGroup(env: Uint8Array, via: Transport) {
+    const now = Date.now()
+    this.held = this.held.filter((h) => now - h.at < 24 * 3600_000).slice(-199)
+    this.held.push({ env, via, at: now })
+  }
+
+  private retrying = false
+  private retryHeld() {
+    if (this.retrying || !this.held.length) return
+    this.retrying = true
+    try {
+      let progress = true
+      while (progress && this.held.length) {
+        progress = false
+        for (const h of [...this.held]) {
+          let inb: Inbound | null = null
+          try {
+            inb = this.engine!.open(h.env, Date.now())
+          } catch {
+            continue
+          }
+          if (!inb) continue
+          this.held = this.held.filter((x) => x !== h)
+          progress = true
+          this.persist()
+          this.set({ contacts: this.engine!.contacts(), groups: this.engine!.groups() })
+          void this.dispatch(inb, h.via)
+        }
+      }
+    } finally {
+      this.retrying = false
+    }
   }
 
   private async dispatch(inb: Inbound, via: Transport) {
     const m = inb.message
-    const convId = convIdFor(inb)
+    const opGroup = m.kind === 'group-op' ? (m.group as { id?: string } | undefined)?.id : undefined
+    const convId = convIdFor(inb.group || !opGroup ? inb : { from: inb.from, group: opGroup })
     switch (m.kind) {
       case 'receipt':
         if (m.receipt) await this.updateStatus(m.receipt.of, m.receipt.state)
@@ -433,10 +483,15 @@ export class Relay {
       case 'reaction':
         if (m.reply_to) await this.applyReaction(convId, m.reply_to, m.text ?? '', inb.from)
         return
-      case 'group-op':
+      case 'group-op': {
         this.set({ groups: this.engine!.groups() })
-        await this.touchConv(convId, { preview: 'Groupe mis à jour', ts: m.ts })
+        if (!convId.startsWith('g:')) return
+        const ev = (m.group as { event?: string; name?: string } | undefined)?.event
+        const known = this.snap.conversations.some((c) => c.id === convId)
+        if (ev === 'removed') await this.addSystem(convId, 'Tu as été retiré du groupe.')
+        else if (!known) await this.addSystem(convId, `${this.titleOf(inb.from)} t’a ajouté au groupe.`)
         return
+      }
       case 'profile':
         return
     }
@@ -608,23 +663,7 @@ export class Relay {
       if (!g) throw new Error('Groupe introuvable.')
       const envs = e.groupEncrypt(gid, msg)
       this.persist()
-      let used: Transport | null = null
-      const me = e.fingerprintHex()
-      const [groupEnv, ...direct] = envs
-      for (const fp of g.members) {
-        if (fp === me) continue
-        const c = this.snap.contacts.find((x) => x.fingerprint === fp)
-        if (!c) continue
-        const t = this.route(groupEnv, { fp, mailbox: c.mailbox }, { msgId: msg.id, convId, queue })
-        used = used ?? t
-      }
-      for (const env of direct) {
-        const tag = e.envelopeHeader(env)?.tag
-        if (!tag) continue
-        const fp = this.snap.contacts.find((x) => x.mailbox === tag)?.fingerprint
-        this.route(env, { fp, mailbox: tag }, { queue })
-      }
-      return used
+      return this.fanout(g, envs, { msgId: msg.id, convId, queue })
     }
     const c = this.snap.contacts.find((x) => x.fingerprint === convId)
     if (!c) throw new Error('Contact introuvable.')
@@ -952,24 +991,35 @@ export class Relay {
     await this.deleteConversation(`g:${gid}`)
   }
 
-  /** Group ops: the group envelope to every member, direct envelopes to their tag. */
-  private fanout(g: Group, envs: Uint8Array[]) {
+  /**
+   * Group envelopes (kind 2) go to every other member's mailbox; sender-key distribution
+   * envelopes (kind 1) go to the mailbox in their tag. The order returned by the core does
+   * not matter. Returns the transport of the group envelope.
+   */
+  private fanout(
+    g: Group,
+    envs: Uint8Array[],
+    meta: { msgId?: string; convId?: string; queue?: boolean } = {},
+  ): Transport | null {
     const e = this.engineOrThrow
     const me = e.fingerprintHex()
+    let used: Transport | null = null
     for (const env of envs) {
       const h = e.envelopeHeader(env)
       if (!h) continue
       if (h.kind === 2) {
-        for (const fp of g.members) {
-          if (fp === me) continue
-          const c = this.snap.contacts.find((x) => x.fingerprint === fp)
-          if (c) this.route(env, { fp, mailbox: c.mailbox })
-        }
+        g.members.forEach((fp, i) => {
+          if (fp === me) return
+          const mailbox = g.mailboxes?.[i] ?? this.snap.contacts.find((x) => x.fingerprint === fp)?.mailbox
+          if (!mailbox) return
+          used = this.route(env, { fp, mailbox }, meta) ?? used
+        })
       } else {
         const fp = this.snap.contacts.find((x) => x.mailbox === h.tag)?.fingerprint
-        this.route(env, { fp, mailbox: h.tag })
+        this.route(env, { fp, mailbox: h.tag }, { queue: meta.queue })
       }
     }
+    return used
   }
 
   private async addSystem(convId: string, text: string) {
@@ -1006,6 +1056,7 @@ export class Relay {
         this.node.reregister()
         return null
       }
+      if (r.msg === 'unsupported') return 'Le moteur ne sait pas encore signer pour l’annuaire.'
       return r.status === 409 ? 'Cet identifiant est déjà pris.' : `Le nœud a refusé (${r.status}).`
     } catch {
       return 'Nœud injoignable.'

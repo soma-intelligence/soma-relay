@@ -106,6 +106,9 @@ export function ChatView({
   } else if (p2p) {
     headline = 'Lien direct, pair à pair'
     chain = `toi → ${title} · P2P`
+  } else if (snap.node !== 'online' && snap.localBus) {
+    headline = online ? 'Bus local du navigateur' : 'Bus local, contact absent'
+    chain = `toi → bus local → ${title} · test`
   } else if (nodeOnline && online) {
     headline = 'En ligne par le nœud'
     chain = `toi → nœud → ${title} · 1 relais`

@@ -91,6 +91,8 @@ export interface Group {
   name: string
   members: string[]
   admins: string[]
+  /** Mailbox of each member (hex), same order as `members` (relay-core 0.1 addition). */
+  mailboxes?: string[]
 }
 
 /** Envelope header fields read on the client side (not part of the core API). */
@@ -171,6 +173,12 @@ export interface Engine {
 
   // Calls
   callKey(fp: string, callId: string): Uint8Array
+
+  /**
+   * Optional, not in core-api yet: Ed25519 signature by the device key over raw bytes, used by
+   * the node directory (`X-Relay-Sig`). Absent: handle publishing is unavailable.
+   */
+  signDetached?(message: Uint8Array): Uint8Array
 
   // Client-side helper, not in the core: reads the postcard header of an envelope.
   envelopeHeader(envelope: Uint8Array): EnvelopeHeader | null

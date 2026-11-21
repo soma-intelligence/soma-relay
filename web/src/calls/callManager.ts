@@ -99,7 +99,7 @@ function orderVideoCodecs(e2ee: boolean): RTCRtpCodec[] | null {
 export class CallManager {
   private listeners = new Set<() => void>()
   private snap: CallSnapshot = CallManager.idle()
-  private pc: RTCPeerConnection | null = null
+  pc: RTCPeerConnection | null = null
   private worker: Worker | null = null
   private pendingIce: RTCIceCandidateInit[] = []
   private pendingOffer: string | null = null
@@ -222,7 +222,7 @@ export class CallManager {
         await this.flushIce()
         this.ringer.stop()
         if (this.timeout) clearTimeout(this.timeout)
-        this.set({ phase: 'connecting' })
+        if (this.snap.phase === 'outgoing') this.set({ phase: 'connecting' })
         break
       }
       case 'ice': {
@@ -301,10 +301,12 @@ export class CallManager {
   }
 
   private async media(video: boolean): Promise<MediaStream> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: AUDIO_CONSTRAINTS,
-      video: video ? VIDEO_CONSTRAINTS : false,
-    })
+    const stream = new URLSearchParams(location.search).has('fakemedia')
+      ? syntheticStream(video)
+      : await navigator.mediaDevices.getUserMedia({
+          audio: AUDIO_CONSTRAINTS,
+          video: video ? VIDEO_CONSTRAINTS : false,
+        })
     stream.getVideoTracks().forEach((t) => (t.contentHint = 'motion'))
     this.set({ localStream: stream })
     return stream
@@ -528,4 +530,40 @@ export class CallManager {
       if (this.snap.phase === 'ended') this.set(CallManager.idle())
     }, 1600)
   }
+}
+
+/**
+ * `?fakemedia`: a generated tone and moving pattern instead of the microphone and camera, for
+ * automated tests and machines without devices.
+ */
+function syntheticStream(video: boolean): MediaStream {
+  const ctx = new AudioContext()
+  const osc = ctx.createOscillator()
+  const gain = ctx.createGain()
+  gain.gain.value = 0.05
+  osc.frequency.value = 330
+  const dest = ctx.createMediaStreamDestination()
+  osc.connect(gain).connect(dest)
+  osc.start()
+  const tracks = [...dest.stream.getAudioTracks()]
+  if (video) {
+    const canvas = document.createElement('canvas')
+    canvas.width = 640
+    canvas.height = 360
+    const g = canvas.getContext('2d')!
+    let t = 0
+    const draw = () => {
+      t++
+      g.fillStyle = '#0c0e0d'
+      g.fillRect(0, 0, 640, 360)
+      g.fillStyle = '#c6f24e'
+      g.beginPath()
+      g.arc(320 + Math.sin(t / 20) * 200, 180, 40, 0, Math.PI * 2)
+      g.fill()
+      if (tracks.some((x) => x.readyState === 'live')) requestAnimationFrame(draw)
+    }
+    draw()
+    tracks.push(...canvas.captureStream(30).getVideoTracks())
+  }
+  return new MediaStream(tracks)
 }

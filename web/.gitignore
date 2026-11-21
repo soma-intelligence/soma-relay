@@ -1,0 +1,4 @@
+tsconfig.tsbuildinfo
+shot.mjs
+test-results/
+playwright-report/

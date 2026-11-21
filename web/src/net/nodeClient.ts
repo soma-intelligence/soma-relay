@@ -224,21 +224,22 @@ export class NodeClient {
   }
 
   /**
-   * Publishes the card under a handle. The body carries the card, the device key and a
-   * signature over the node-auth context with the handle bytes as the nonce, so the node can
-   * check the request comes from the card's device key.
+   * Publishes the card under a handle: `PUT /v1/directory/{handle}` with the raw card as body,
+   * `X-Relay-Mailbox` and `X-Relay-Sig` (Ed25519 over the card bytes with the device key the
+   * node bound to this mailbox at WebSocket auth).
    */
   async registerHandle(handle: string, card: string): Promise<{ ok: boolean; status: number; msg: string }> {
-    const sig = this.engine.signNodeChallenge(utf8(handle))
+    if (!this.engine.signDetached) return { ok: false, status: 0, msg: 'unsupported' }
+    const body = utf8(card)
+    const sig = this.engine.signDetached(body)
     const r = await fetch(this.url(`/v1/directory/${encodeURIComponent(handle)}`), {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        card: toB64Url(utf8(card)),
-        mailbox: this.engine.mailboxHex(),
-        pub: toB64Url(this.engine.deviceSigningPublic()),
-        sig: toB64Url(sig),
-      }),
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        'x-relay-mailbox': this.engine.mailboxHex(),
+        'x-relay-sig': toB64Url(sig),
+      },
+      body: card,
     })
     return { ok: r.ok, status: r.status, msg: r.ok ? '' : await r.text().catch(() => '') }
   }
