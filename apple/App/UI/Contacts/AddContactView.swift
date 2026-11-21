@@ -28,7 +28,7 @@ struct AddContactView: View {
                         switch mode {
                         case .scan: scan
                         case .paste: field("Colle un lien relay1c: ou une carte relay1:", prompt: "relay1c:…")
-                        case .handle: field("Le pseudo publié sur un nœud.", prompt: "ines@relay.somalabs.me")
+                        case .handle: field("Le pseudo publié sur un nœud.", prompt: "ines@" + AppConfig.defaultNodeHost)
                         case .nearby: nearby
                         }
                         if let error {

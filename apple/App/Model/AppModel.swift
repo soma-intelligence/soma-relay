@@ -8,7 +8,7 @@ import UserNotifications
 final class AppModel {
     enum Phase: Equatable { case loading, onboarding, ready }
 
-    static let defaultNodeURL = "https://relay.somalabs.me"
+    static var defaultNodeURL: String { AppConfig.defaultNodeURL }
 
     var phase: Phase = .loading
     private(set) var core: RelayCoreAPI?
@@ -72,7 +72,7 @@ final class AppModel {
 
     init() {
         let args = UserDefaults.standard
-        demo = args.bool(forKey: "RelayDemoData")
+        demo = AppConfig.demoAllowed && args.bool(forKey: "RelayDemoData")
         nodeURL = args.string(forKey: "nodeURL") ?? Self.defaultNodeURL
         handle = args.string(forKey: "handle") ?? ""
         visibleNearby = args.object(forKey: "visibleNearby") as? Bool ?? true
@@ -404,7 +404,7 @@ final class AppModel {
     /// The envelope of a pending message as an encrypted SMS link (text only, <= 1 KiB envelope).
     func smsLink(for messageId: String) -> String? {
         guard let item = db.outbox().first(where: { $0.messageId == messageId }), item.envelope.count <= 1100 else { return nil }
-        return "https://relay.somalabs.me/m#" + item.envelope.base64url
+        return AppConfig.smsLinkBase + item.envelope.base64url
     }
 
     func markSentBySMS(_ messageId: String) {
@@ -707,13 +707,22 @@ final class AppModel {
         restartMesh()
     }
 
+    /// Publishes `handle` on the node directory. The node only accepts it from a mailbox that
+    /// authenticated over `/v1/ws`, so the node link must be ready.
     func publishHandle() async throws {
-        guard let core, let card = myCard, !handle.isEmpty else { return }
+        guard let core else { return }
+        let handle = handle.lowercased()
+        guard handle.count >= 3, handle.count <= 32,
+            handle.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || "_.-".contains($0)) })
+        else { throw RelayCoreError.malformed("Pseudo : 3 à 32 caractères parmi a-z, 0-9, _ . -") }
+        guard nodeEnabled, nodeState == .ready else { throw RelayCoreError.unknown("Connecte-toi d'abord au nœud.") }
         (core as? MockRelayCore)?.setHandle(handle, node: nodeURL)
-        guard let sig = core.signDetached(Data(card.utf8)) else {
-            throw RelayCoreError.unknown("Le cœur ne sait pas encore signer l'annuaire.")
-        }
-        try await node.publish(handle: handle, card: card, mailbox: core.mailboxHex(), signature: sig)
+        // The card signed below carries the node URL last given to myCard.
+        _ = core.myCard(nodeUrl: nodeURL, handle: handle)
+        let entry = try core.signDirectoryEntry(handle: handle)
+        scheduleSave()
+        try await node.publish(handle: handle, card: entry.card, mailbox: core.mailboxHex(), signature: entry.sig)
+        scheduleSave()
     }
 
     /// Sealed export of the engine state, for a backup the user keeps.

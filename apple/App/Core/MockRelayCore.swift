@@ -312,7 +312,15 @@ nonisolated final class MockRelayCore: RelayCoreAPI {
         }
     }
 
-    func signDetached(_ data: Data) -> Data? { try? signing.signature(for: data) }
+    func signDirectoryEntry(handle: String) throws(RelayCoreError) -> (card: String, sig: Data) {
+        let card = myCard(nodeUrl: state.node, handle: handle)
+        var message = Data("soma-relay/directory/v1".utf8)
+        message.append(UInt8(handle.utf8.count))
+        message.append(Data(handle.utf8))
+        message.append(Data(card.utf8))
+        guard let sig = try? signing.signature(for: message) else { throw .unknown("Signature impossible.") }
+        return (card, sig)
+    }
 
     /// Handle published on the node, carried in the compact link.
     func setHandle(_ handle: String?, node: String?) {

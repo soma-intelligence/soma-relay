@@ -109,8 +109,10 @@ nonisolated final class FFIRelayCore: RelayCoreAPI {
         return try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
     }
 
-    /// The core does not expose a detached Ed25519 signature yet (node directory PUT).
-    func signDetached(_ data: Data) -> Data? { nil }
+    func signDirectoryEntry(handle: String) throws(RelayCoreError) -> (card: String, sig: Data) {
+        let entry = try run { try engine.signDirectoryEntry(handle: handle) }
+        return (entry.card, entry.sig)
+    }
 
     func makeMeshRouter() -> MeshRouterAPI { FFIMeshRouter() }
 }

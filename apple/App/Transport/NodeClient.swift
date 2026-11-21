@@ -189,16 +189,40 @@ final class NodeClient {
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    /// `PUT /v1/directory/{handle}`: raw card, `X-Relay-Mailbox`, `X-Relay-Sig` (Ed25519 over the card).
-    func publish(handle: String, card: String, mailbox: String, signature: Data) async throws {
+    /// `PUT /v1/directory/{handle}`: body = the card exactly, `X-Relay-Mailbox` = mailbox hex,
+    /// `X-Relay-Sig` = base64url (no padding) of the directory signature.
+    func publish(handle: String, card: String, mailbox: String, signature: Data) async throws(PublishError) {
         var request = URLRequest(url: http("v1/directory/\(handle.lowercased())"))
         request.httpMethod = "PUT"
         request.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue(mailbox, forHTTPHeaderField: "X-Relay-Mailbox")
         request.setValue(signature.base64url, forHTTPHeaderField: "X-Relay-Sig")
         request.httpBody = Data(card.utf8)
-        let (_, response) = try await session.data(for: request)
-        guard let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code) else { throw URLError(.badServerResponse) }
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: request) } catch { throw .network }
+        guard let code = (response as? HTTPURLResponse)?.statusCode else { throw .network }
+        if (200..<300).contains(code) { return }
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        throw .refused(code: obj?["error"] as? String ?? "http_\(code)")
+    }
+
+    nonisolated enum PublishError: LocalizedError {
+        case network
+        case refused(code: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .network: "Nœud injoignable."
+            case .refused("handle_taken"): "Ce pseudo est déjà pris sur ce nœud."
+            case .refused("too_many_handles"): "Ce compte a déjà 5 pseudos sur ce nœud."
+            case .refused("unknown_mailbox"): "Le nœud ne te connaît pas encore. Reconnecte-toi puis réessaie."
+            case .refused("bad_handle"): "Pseudo : 3 à 32 caractères parmi a-z, 0-9, _ . -"
+            case .refused("bad_signature"): "Signature refusée par le nœud."
+            case .refused("card_rejected"): "Le nœud a refusé ta carte."
+            case .refused(let code): "Publication refusée (\(code))."
+            }
+        }
     }
 
     func uploadBlob(_ data: Data, sha: String) async throws -> String {

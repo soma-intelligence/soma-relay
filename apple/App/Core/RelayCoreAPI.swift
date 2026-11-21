@@ -101,7 +101,10 @@ nonisolated protocol RelayCoreAPI: AnyObject {
     func envelopeKind(_ envelope: Data) -> String?
     /// Ed25519 signature by the device key over arbitrary bytes (node directory PUT), nil when the
     /// core does not expose it.
-    func signDetached(_ data: Data) -> Data?
+    /// Own card carrying `handle` (node URL as last given to `myCard`) and the Ed25519 identity
+    /// signature over "soma-relay/directory/v1" || u8 len(handle) || handle || card, for
+    /// `PUT /v1/directory/{handle}`.
+    func signDirectoryEntry(handle: String) throws(RelayCoreError) -> (card: String, sig: Data)
 
     /// A fresh mesh router (one per app run).
     func makeMeshRouter() -> MeshRouterAPI
