@@ -84,7 +84,9 @@ scripts/        Build scripts for the Swift framework and the wasm package
 
 ## Try it in a browser
 
-A node serves the web client at `/`. Open it twice with two profiles to chat with yourself:
+Soma Labs runs a public test node: https://relay-node.graybay-20896372.westus2.azurecontainerapps.io. It keeps undelivered messages in memory only, so a restart drops them.
+
+Every node serves the web client at `/`. Open it twice with two profiles to chat with yourself:
 
 ```
 https://<node>/?profile=a
@@ -168,6 +170,10 @@ The web end-to-end tests (`cd web && pnpm e2e`) start a local node and run two b
 - No push notifications yet: the app must be open or recently opened to receive Internet messages. Mesh messages wait for you on nearby phones.
 - One device per identity for now. Multi-device is planned.
 - Payments are out of scope for v1.
+
+## Privacy
+
+No account, no analytics, messages stored only on your device. Full policy: [PRIVACY.md](PRIVACY.md).
 
 ## License
 
