@@ -1,0 +1,13 @@
+target/
+node_modules/
+web/dist/
+web/src/core/pkg/
+apple/build/
+apple/DerivedData/
+apple/Frameworks/RelayCoreFFI.xcframework/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+bot-identity.bin
+*.p8
+.env*
