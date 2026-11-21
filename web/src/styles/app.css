@@ -506,6 +506,9 @@ a {
   gap: 10px;
   align-items: flex-start;
 }
+.channel-note > svg {
+  flex: none;
+}
 .channel-note strong {
   color: var(--fg);
   display: block;
@@ -689,13 +692,13 @@ a {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 178px 14px 110px;
+  padding: 196px 14px 110px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 .messages.with-path-open {
-  padding-top: 250px;
+  padding-top: 272px;
 }
 .day {
   align-self: center;
