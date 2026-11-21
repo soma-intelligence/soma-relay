@@ -39,6 +39,8 @@ final class CallManager: NSObject {
     @ObservationIgnored private var pendingCandidates: [RTCIceCandidate] = []
     @ObservationIgnored private var keyProvider: RTCFrameCryptorKeyProvider?
     @ObservationIgnored private var cryptors: [RTCFrameCryptor] = []
+    @ObservationIgnored private var sendCryptors: [RTCFrameCryptor] = []
+    @ObservationIgnored private var remoteE2EE = false
     @ObservationIgnored private var capturer: RTCCameraVideoCapturer?
     @ObservationIgnored private var rotation: Task<Void, Never>?
     @ObservationIgnored private var timeout: Task<Void, Never>?
@@ -46,7 +48,9 @@ final class CallManager: NSObject {
     @ObservationIgnored private let callController = CXCallController()
     @ObservationIgnored private var callUUID: UUID?
 
-    static let ratchetSalt = Data("soma-relay call v1".utf8)
+    static let ratchetSalt = Data("soma-relay call ratchet".utf8)
+    static let e2eeLine = "a=x-soma-e2ee:lk1"
+    static let keyRing = 16
     static let rotateEvery: Duration = .seconds(300)
 
     init(model: AppModel) {
@@ -100,8 +104,9 @@ final class CallManager: NSObject {
             let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
             guard let offer = try? await pc.offer(for: constraints) else { return fail("Impossible de préparer l'appel.") }
             let sdp = RTCSessionDescription(type: .offer, sdp: Self.mungeOpus(offer.sdp))
+            let wire = Self.advertiseE2EE(sdp.sdp)
             try? await pc.setLocalDescription(sdp)
-            signal(.offer, sdp: sdp.sdp)
+            signal(.offer, sdp: wire)
             armTimeout(seconds: 45, reason: "Pas de réponse")
         }
     }
@@ -123,7 +128,10 @@ final class CallManager: NSObject {
         case .answer:
             guard current?.id == signal.callId, let sdp = signal.sdp, let pc else { return }
             Task {
-                try? await pc.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: sdp))
+                let (clean, e2ee) = Self.readE2EE(sdp)
+                remoteE2EE = e2ee
+                try? await pc.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: clean))
+                applyRemoteE2EE()
                 attachReceiverCryptors()
                 flushCandidates()
                 setState(.connecting)
@@ -150,14 +158,17 @@ final class CallManager: NSObject {
         Task {
             await makePeerConnection(video: current.video)
             guard let pc else { return }
-            try? await pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: offer))
+            let (clean, e2ee) = Self.readE2EE(offer)
+            remoteE2EE = e2ee
+            try? await pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: clean))
+            applyRemoteE2EE()
             attachReceiverCryptors()
             flushCandidates()
             let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
             guard let answer = try? await pc.answer(for: constraints) else { return fail("Impossible de répondre.") }
             let sdp = RTCSessionDescription(type: .answer, sdp: Self.mungeOpus(answer.sdp))
             try? await pc.setLocalDescription(sdp)
-            signal(.answer, sdp: sdp.sdp)
+            signal(.answer, sdp: remoteE2EE ? Self.advertiseE2EE(sdp.sdp) : sdp.sdp)
         }
     }
 
@@ -281,22 +292,29 @@ final class CallManager: NSObject {
 
     // MARK: Frame encryption (LiveKit RTCFrameCryptor)
 
-    /// Keys: k_dir = HKDF-SHA256(callKey, salt = call_id, info = "soma-relay call v1 send" || sender fp).
-    /// Each side encrypts with its own k and decrypts the peer's; the provider ratchets with
-    /// HKDF + `ratchetSalt` every 5 minutes (receivers follow within the ratchet window).
+    /// LiveKit frame format, shared key mode (see docs/research/calls.md, "Interop").
+    /// material_0 = callKey(fp, call_id); material_{n+1} = HKDF-SHA256(material_n, salt = ratchetSalt,
+    /// info = 128 zero bytes, 32 bytes). LiveKit turns material_n into the AES-128-GCM frame key with
+    /// HKDF-SHA256(material_n, ratchetSalt, 128 zero bytes, 16 bytes). Key index = n mod 16, carried
+    /// in the frame trailer. Every 5 minutes the sender moves to n + 1; n + 1 is installed one step
+    /// ahead so a peer whose clock rotates first still decrypts.
     private func setUpFrameEncryption(_ pc: RTCPeerConnection, peer: String, callId: String) {
         guard let model, let core = model.core, let callKey = try? core.callKey(fp: peer, callId: callId) else { return }
         let me = core.fingerprintHex()
         let provider = RTCFrameCryptorKeyProvider(
-            ratchetSalt: Self.ratchetSalt, ratchetWindowSize: 16, sharedKeyMode: false, uncryptedMagicBytes: nil,
-            failureTolerance: -1, keyRingSize: 16, discardFrameWhenCryptorNotReady: true, keyDerivationAlgorithm: .HKDF)
-        provider.setKey(Self.directional(callKey, callId: callId, sender: me), with: 0, forParticipant: me)
-        provider.setKey(Self.directional(callKey, callId: callId, sender: peer), with: 0, forParticipant: peer)
+            ratchetSalt: Self.ratchetSalt, ratchetWindowSize: 0, sharedKeyMode: true, uncryptedMagicBytes: nil,
+            failureTolerance: -1, keyRingSize: Int32(Self.keyRing), discardFrameWhenCryptorNotReady: true, keyDerivationAlgorithm: .HKDF)
+        let first = callKey
+        let second = Self.ratchet(first)
+        provider.setSharedKey(first, with: 0)
+        provider.setSharedKey(second, with: 1)
         keyProvider = provider
         for sender in pc.senders {
             if let cryptor = RTCFrameCryptor(factory: factory, rtpSender: sender, participantId: me, algorithm: .aesGcm, keyProvider: provider) {
+                cryptor.keyIndex = 0
                 cryptor.enabled = true
                 cryptors.append(cryptor)
+                sendCryptors.append(cryptor)
             }
         }
         var c = current
@@ -304,16 +322,48 @@ final class CallManager: NSObject {
         current = c
         rotation?.cancel()
         rotation = Task { [weak self] in
+            var step = 0
+            var next = second
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.rotateEvery)
                 guard !Task.isCancelled, let self, let provider = self.keyProvider else { return }
-                _ = provider.ratchetKey(me, with: 0)
+                step += 1
+                for cryptor in self.sendCryptors { cryptor.keyIndex = Int32(step % Self.keyRing) }
+                next = Self.ratchet(next)
+                provider.setSharedKey(next, with: Int32((step + 1) % Self.keyRing))
             }
         }
     }
 
+    /// One LiveKit ratchet step: HKDF-SHA256(material, ratchetSalt, 128 zero bytes, 32 bytes).
+    static func ratchet(_ material: Data) -> Data {
+        let key = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: material), salt: ratchetSalt,
+            info: Data(count: 128), outputByteCount: 32)
+        return key.withUnsafeBytes { Data($0) }
+    }
+
+    /// A peer that does not advertise `a=x-soma-e2ee:lk1` gets DTLS-SRTP only: frames go out clear.
+    private func applyRemoteE2EE() {
+        guard !remoteE2EE else { return }
+        for cryptor in cryptors { cryptor.enabled = false }
+        var c = current
+        c?.frameEncrypted = false
+        current = c
+    }
+
+    static func advertiseE2EE(_ sdp: String) -> String {
+        sdp.hasSuffix("\r\n") ? sdp + e2eeLine + "\r\n" : sdp + "\r\n" + e2eeLine + "\r\n"
+    }
+
+    static func readE2EE(_ sdp: String) -> (sdp: String, e2ee: Bool) {
+        let lines = sdp.components(separatedBy: "\r\n")
+        let e2ee = lines.contains(e2eeLine)
+        return (lines.filter { $0 != e2eeLine }.joined(separator: "\r\n"), e2ee)
+    }
+
     private func attachReceiverCryptors() {
-        guard let pc, let provider = keyProvider, let peer = current?.peer else { return }
+        guard remoteE2EE, let pc, let provider = keyProvider, let peer = current?.peer else { return }
         let existing = Set(cryptors.map { ObjectIdentifier($0) })
         for transceiver in pc.transceivers {
             if let cryptor = RTCFrameCryptor(factory: factory, rtpReceiver: transceiver.receiver, participantId: peer, algorithm: .aesGcm, keyProvider: provider),
@@ -412,6 +462,8 @@ final class CallManager: NSObject {
         capturer = nil
         cryptors.forEach { $0.enabled = false }
         cryptors = []
+        sendCryptors = []
+        remoteE2EE = false
         keyProvider = nil
         pc?.close()
         pc = nil
