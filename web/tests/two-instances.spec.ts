@@ -88,3 +88,74 @@ test('a published handle lets another instance find the card', async ({ browser 
   await ines.getByRole('listitem').filter({ hasText: 'Alice' }).first().click()
   await expect(ines.locator('.bubble', { hasText: hello })).toBeVisible({ timeout: 20_000 })
 })
+
+// v1.1: polls, edits, deletes and reactions travel between two profiles through the node.
+async function connect(browser: Browser, tag: string) {
+  const alice = await open(browser, `pa-${tag}`)
+  const ines = await open(browser, `pb-${tag}`)
+  await onboard(alice, 'Alice')
+  await onboard(ines, 'Inès')
+  await ines.getByRole('button', { name: 'Mon code', exact: true }).first().click()
+  await ines.getByRole('button', { name: 'Lien court' }).click()
+  await expect(ines.getByRole('button', { name: 'Copié' })).toBeVisible()
+  const link = await ines.evaluate(() => navigator.clipboard.readText())
+  await ines.keyboard.press('Escape')
+  await alice.getByRole('button', { name: 'Ajouter un contact', exact: true }).first().click()
+  await alice.getByRole('button', { name: 'Lien' }).click()
+  await alice.fill('#add-link', link)
+  await alice.locator('form').getByRole('button', { name: 'Ajouter' }).click()
+  const hello = `Coucou ${tag}`
+  await alice.fill('#composer-input', hello)
+  await alice.keyboard.press('Enter')
+  await ines.getByRole('listitem').filter({ hasText: 'Alice' }).first().click()
+  await expect(ines.locator('.bubble', { hasText: hello })).toBeVisible({ timeout: 20_000 })
+  return { alice, ines }
+}
+
+test('poll vote, edit, delete for everyone and reaction cross profiles', async ({ browser }) => {
+  const tag = Date.now().toString(36)
+  const { alice, ines } = await connect(browser, tag)
+
+  // Alice creates a poll from the attachment menu.
+  await alice.getByRole('button', { name: 'Joindre', exact: true }).click()
+  await alice.getByRole('menuitem', { name: 'Sondage' }).click()
+  await alice.fill('#poll-q', `On mange où ? ${tag}`)
+  await alice.getByLabel('Réponse 1').fill('Crêperie')
+  await alice.getByLabel('Réponse 2').fill('Food trucks')
+  await alice.getByRole('button', { name: 'Envoyer le sondage' }).click()
+
+  // Inès votes; Alice sees the vote count.
+  const inesPoll = ines.locator('.poll-card', { hasText: `On mange où ? ${tag}` })
+  await expect(inesPoll).toBeVisible({ timeout: 20_000 })
+  await inesPoll.locator('.poll-opt', { hasText: 'Crêperie' }).click()
+  const alicePoll = alice.locator('.poll-card', { hasText: `On mange où ? ${tag}` })
+  await expect(alicePoll).toContainText('1 vote', { timeout: 20_000 })
+
+  // Alice edits her last text with the up arrow.
+  const first = `Je suis au stand ${tag}`
+  await alice.fill('#composer-input', first)
+  await alice.keyboard.press('Enter')
+  await expect(ines.locator('.bubble', { hasText: first })).toBeVisible({ timeout: 20_000 })
+  await alice.locator('#composer-input').focus()
+  await alice.keyboard.press('ArrowUp')
+  const edited = `Je suis au stand 4 ${tag}`
+  await alice.fill('#composer-input', edited)
+  await alice.keyboard.press('Enter')
+  await expect(ines.locator('.bubble', { hasText: edited })).toBeVisible({ timeout: 20_000 })
+  await expect(ines.locator('.msg', { hasText: edited })).toContainText('modifié')
+
+  // Inès reacts to it from the context menu; Alice sees the reaction.
+  await ines.locator('.bubble', { hasText: edited }).click({ button: 'right' })
+  await ines.getByRole('menuitem', { name: 'Réagir 👍' }).click()
+  await expect(alice.locator('.msg', { hasText: edited }).locator('.reactions')).toContainText('👍', { timeout: 20_000 })
+
+  // Alice deletes another message for everyone; Inès sees the tombstone.
+  const oops = `Oups ${tag}`
+  await alice.fill('#composer-input', oops)
+  await alice.keyboard.press('Enter')
+  await expect(ines.locator('.bubble', { hasText: oops })).toBeVisible({ timeout: 20_000 })
+  await alice.locator('.bubble', { hasText: oops }).click({ button: 'right' })
+  await alice.getByRole('menuitem', { name: 'Supprimer pour tous' }).click()
+  await expect(ines.locator('.bubble', { hasText: oops })).toHaveCount(0, { timeout: 20_000 })
+  await expect(ines.getByText('Message supprimé').last()).toBeVisible()
+})
