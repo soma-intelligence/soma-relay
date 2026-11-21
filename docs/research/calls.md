@@ -163,6 +163,8 @@ Web today uses `material_n` raw as an AES-256-GCM key and ratchets with `info = 
 
 **Rotation.** Every 5 minutes each sender moves its send index from n to n + 1. iOS installs `material_{n+1}` one step ahead (keys n and n + 1 are always present), so a receiver decrypts a peer whose timer fires first. Receivers pick the key by the trailer index. iOS sets `ratchetWindowSize = 0` (no automatic ratchet on decrypt failure) and `failureTolerance = -1`. Keys are dropped on hang up.
 
+**Deltas between the two sections, for web to close.** (1) LiveKit cannot take a raw AES key: `setSharedKey` always runs the HKDF above, so "push raw keys per index" is not possible on iOS; web must derive AES-128 keys from the material. (2) Ratchet info is 128 zero bytes, not `"ratchet"`. (3) `keyIndex` must stay below `keyRingSize` (LiveKit drops frames with an index >= 16), so use `n mod 16`, not `n mod 256`. (4) iOS appends the flag as the last SDP line and matches it anywhere in the SDP; web should also match it anywhere.
+
 **Not done yet.** No interop test has run between an iOS device and a browser. Steps 6 and 7 of the E2EE plan (DTLS fingerprints signed by the PQ session, call-verification code) are not built on iOS.
 
 ## Interop (web client, 2026-11-21)
