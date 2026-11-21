@@ -1,0 +1,20 @@
+[package]
+name = "relay-wasm"
+description = "wasm-bindgen bindings of relay-core for the web client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+relay-core = { path = "../relay-core" }
+wasm-bindgen = "0.2.100"
+js-sys = "0.3"
+serde = "1"
+serde_json = "1"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
