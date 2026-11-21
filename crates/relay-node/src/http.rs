@@ -1,4 +1,5 @@
-//! HTTP API: cards, directory, blobs, ICE list, health, static web client.
+//! HTTP API: cards, directory, blobs, ICE list, push key, link previews, health, static web
+//! client.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -30,6 +31,8 @@ pub fn router(state: Arc<NodeState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/v1/ws", get(ws::upgrade))
         .route("/v1/ice", get(ice))
+        .route("/v1/push/vapid", get(vapid))
+        .route("/v1/preview", get(preview))
         .route("/v1/cards/{mailbox}", get(get_card))
         .route("/v1/directory/{handle}", get(get_handle).put(put_handle))
         .route(
@@ -93,6 +96,40 @@ async fn healthz(State(state): State<Arc<NodeState>>) -> Response {
 
 async fn ice(State(state): State<Arc<NodeState>>) -> Response {
     Json(json!({"iceServers": state.ice})).into_response()
+}
+
+async fn vapid(State(state): State<Arc<NodeState>>) -> Response {
+    Json(json!({"key": state.vapid_public_key()})).into_response()
+}
+
+async fn preview(State(state): State<Arc<NodeState>>, req: Request) -> Response {
+    use crate::preview::{PreviewError, parse_target};
+    if !state.config.preview {
+        return api_error(StatusCode::NOT_FOUND, "not_found", "link previews are off on this node");
+    }
+    if !state.previewer.limiter.check(client_ip(&state, &req)) {
+        let mut r = api_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "slow down");
+        r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+        return r;
+    }
+    let raw = req
+        .uri()
+        .query()
+        .and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "url").map(|(_, v)| v.into_owned()));
+    let Some(target) = raw.as_deref().and_then(parse_target) else {
+        return api_error(StatusCode::BAD_REQUEST, "bad_url", "url must be an http(s) URL");
+    };
+    match state.previewer.preview(&state.net, target).await {
+        Ok(p) => {
+            let mut r = Json(&*p).into_response();
+            r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=600"));
+            r
+        }
+        Err(PreviewError::BadUrl) => api_error(StatusCode::BAD_REQUEST, "bad_url", "only ports 80 and 443, no credentials"),
+        Err(PreviewError::Blocked) => api_error(StatusCode::FORBIDDEN, "blocked", "the address is not public"),
+        Err(PreviewError::Busy) => api_error(StatusCode::SERVICE_UNAVAILABLE, "busy", "too many previews in flight"),
+        Err(PreviewError::Failed) => api_error(StatusCode::BAD_GATEWAY, "fetch_failed", "no preview for this page"),
+    }
 }
 
 fn card_response(card: Vec<u8>, mailbox: Option<&[u8; 16]>) -> Response {

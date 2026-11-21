@@ -16,6 +16,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 struct Node {
     addr: SocketAddr,
+    state: std::sync::Arc<NodeState>,
     _dir: tempfile::TempDir,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -40,10 +41,10 @@ impl Node {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(serve(listener, state, async move {
+        tokio::spawn(serve(listener, state.clone(), async move {
             let _ = rx.await;
         }));
-        Node { addr, _dir: dir, stop: Some(tx) }
+        Node { addr, state, _dir: dir, stop: Some(tx) }
     }
 
     fn http(&self, path: &str) -> String {
@@ -493,4 +494,209 @@ async fn core_verifier_accepts_real_cards_only() {
     assert_eq!(put("ada", entry.clone(), &sig).await.unwrap().status(), 201);
     let r = http.get(node.http("/v1/directory/ada")).send().await.unwrap();
     assert_eq!(r.text().await.unwrap(), entry);
+}
+
+#[tokio::test]
+async fn push_registration_frames() {
+    let node = Node::start().await;
+    let (ka, ma) = Client::identity(31);
+    let mut raw = Client::connect_raw(&node).await;
+    raw.send(Message::Text(json!({"t": "push", "kind": "none"}).to_string().into())).await.unwrap();
+    let Message::Text(t) = raw.next().await.unwrap().unwrap() else { panic!() };
+    assert_eq!(serde_json::from_str::<Value>(t.as_str()).unwrap()["code"], "auth_required");
+
+    let (mut a, _) = Client::connect(&node, ka, ma).await;
+    let token = "0123456789abcdef".repeat(4);
+    a.send(json!({"t": "push", "kind": "apns", "token": token, "env": "sandbox"})).await;
+    assert_eq!(a.recv().await, json!({"t": "push", "ok": false, "reason": "apns_off"}));
+
+    a.send(json!({"t": "push", "kind": "webpush", "sub": {"endpoint": "https://push.example.org/x"}})).await;
+    assert_eq!(a.recv().await, json!({"t": "push", "ok": false, "reason": "bad_request"}));
+    a.send(json!({"t": "push", "kind": "pigeon"})).await;
+    assert_eq!(a.recv().await, json!({"t": "push", "ok": false, "reason": "bad_request"}));
+
+    let ua = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let p256dh = b64(p256::EncodedPoint::from(ua.public_key()).as_bytes());
+    let sub = json!({"endpoint": "https://push.example.org/send/abc", "keys": {"p256dh": p256dh, "auth": b64(&[9; 16])}});
+    a.send(json!({"t": "push", "kind": "webpush", "sub": sub})).await;
+    assert_eq!(a.recv().await, json!({"t": "push", "ok": true}));
+    let reg = node.state.store.get_push(&ma).unwrap().unwrap();
+    assert_eq!(reg.kind, "webpush");
+
+    a.send(json!({"t": "push", "kind": "none"})).await;
+    assert_eq!(a.recv().await, json!({"t": "push", "ok": true}));
+    assert!(node.state.store.get_push(&ma).unwrap().is_none());
+
+    // The VAPID key is served and stable.
+    let key: Value = reqwest::get(node.http("/v1/push/vapid")).await.unwrap().json().await.unwrap();
+    let key = unb64(key["key"].as_str().unwrap());
+    assert_eq!((key.len(), key[0]), (65, 4));
+    assert_eq!(b64(&key), node.state.vapid_public_key());
+}
+
+/// A fake push service on 127.0.0.1 records what the node posts.
+async fn fake_push_service(status: u16) -> (SocketAddr, tokio::sync::mpsc::UnboundedReceiver<(axum::http::HeaderMap, Vec<u8>)>) {
+    use axum::routing::post;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = axum::Router::new().route(
+        "/push/{id}",
+        post(move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send((headers, body.to_vec()));
+                axum::http::StatusCode::from_u16(status).unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr, rx)
+}
+
+#[tokio::test]
+async fn web_push_wakes_offline_mailbox_once_per_30s() {
+    let node = Node::start().await;
+    node.state.allow_loopback_for_tests();
+    let (svc, mut posts) = fake_push_service(201).await;
+    let (ka, ma) = Client::identity(41);
+    let (kb, mb) = Client::identity(42);
+
+    // B registers a subscription, then goes offline.
+    let ua = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let p256dh = b64(p256::EncodedPoint::from(ua.public_key()).as_bytes());
+    let auth = [5u8; 16];
+    let sub = json!({"endpoint": format!("http://{svc}/push/b"), "keys": {"p256dh": p256dh, "auth": b64(&auth)}});
+    let (mut b, _) = Client::connect(&node, kb, mb).await;
+    b.send(json!({"t": "push", "kind": "webpush", "sub": sub})).await;
+    assert_eq!(b.recv().await, json!({"t": "push", "ok": true}));
+
+    let (mut a, _) = Client::connect(&node, ka, ma).await;
+    // B online: no push.
+    a.send(json!({"t": "send", "to": hex::encode(mb), "env": b64(&envelope(mb, [0x51; 16], b"x"))})).await;
+    assert_eq!(a.recv().await["t"], "sent");
+    assert_eq!(b.recv().await["t"], "env");
+    drop(b);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // B offline: one push, then throttled.
+    for id in [0x52u8, 0x53, 0x54] {
+        a.send(json!({"t": "send", "to": hex::encode(mb), "env": b64(&envelope(mb, [id; 16], b"x"))})).await;
+        assert_eq!(a.recv().await["t"], "sent");
+    }
+    let (headers, body) = tokio::time::timeout(Duration::from_secs(5), posts.recv()).await.unwrap().unwrap();
+    assert_eq!(headers["content-encoding"], "aes128gcm");
+    assert_eq!(headers["ttl"], "86400");
+    assert_eq!(headers["urgency"], "high");
+    let authz = headers["authorization"].to_str().unwrap();
+    assert!(authz.starts_with("vapid t="), "{authz}");
+    assert!(authz.ends_with(&format!(", k={}", node.state.vapid_public_key())));
+    let plain = relay_node::push::webpush::decrypt(&body, &ua, &auth).expect("decrypts");
+    assert_eq!(plain, br#"{"t":"wake"}"#);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(posts.try_recv().is_err(), "at most one push per mailbox every 30 s");
+}
+
+#[tokio::test]
+async fn web_push_gone_removes_subscription() {
+    let node = Node::start().await;
+    node.state.allow_loopback_for_tests();
+    let (svc, mut posts) = fake_push_service(410).await;
+    let (ka, ma) = Client::identity(43);
+    let (kb, mb) = Client::identity(44);
+    let ua = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let p256dh = b64(p256::EncodedPoint::from(ua.public_key()).as_bytes());
+    let sub = json!({"endpoint": format!("http://{svc}/push/b"), "keys": {"p256dh": p256dh, "auth": b64(&[1; 16])}});
+    let (mut b, _) = Client::connect(&node, kb, mb).await;
+    b.send(json!({"t": "push", "kind": "webpush", "sub": sub})).await;
+    assert_eq!(b.recv().await, json!({"t": "push", "ok": true}));
+    drop(b);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (mut a, _) = Client::connect(&node, ka, ma).await;
+    a.send(json!({"t": "send", "to": hex::encode(mb), "env": b64(&envelope(mb, [0x61; 16], b"x"))})).await;
+    assert_eq!(a.recv().await["t"], "sent");
+    tokio::time::timeout(Duration::from_secs(5), posts.recv()).await.unwrap().unwrap();
+    for _ in 0..50 {
+        if node.state.store.get_push(&mb).unwrap().is_none() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("410 must remove the subscription");
+}
+
+fn test_png(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
+#[tokio::test]
+async fn link_preview() {
+    use axum::response::{Html, IntoResponse, Redirect};
+    use axum::routing::get;
+    let png = test_png(1200, 800);
+    let site = axum::Router::new()
+        .route("/start", get(|| async { Redirect::temporary("/page") }))
+        .route(
+            "/page",
+            get(|| async {
+                Html(
+                    r#"<html><head><title>Fallback</title>
+                    <meta property="og:title" content="Une page">
+                    <meta property="og:description" content="Avec une description">
+                    <meta property="og:site_name" content="Exemple">
+                    <meta property="og:image" content="/card.png"></head></html>"#,
+                )
+            }),
+        )
+        .route("/card.png", get(move || async move { ([("content-type", "image/png")], png).into_response() }))
+        .route("/evil", get(|| async { Redirect::temporary("http://169.254.169.254/latest/meta-data/") }))
+        .route("/json", get(|| async { axum::Json(json!({"a": 1})) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let svc = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, site).await.unwrap() });
+
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let ask = |target: String| {
+        let http = http.clone();
+        let url = node.http("/v1/preview");
+        async move { http.get(url).query(&[("url", target)]).send().await.unwrap() }
+    };
+
+    // Without the test switch, loopback is refused.
+    let r = ask(format!("http://{svc}/start")).await;
+    assert_eq!(r.status(), 400, "port is not 80/443");
+    let r = ask("http://127.0.0.1/start".into()).await;
+    assert_eq!(r.status(), 403);
+    let r = ask("http://localhost/".into()).await;
+    assert_eq!(r.status(), 403);
+    let r = ask("file:///etc/passwd".into()).await;
+    assert_eq!(r.status(), 400);
+    assert_eq!(http.get(node.http("/v1/preview")).send().await.unwrap().status(), 400);
+
+    node.state.allow_loopback_for_tests();
+    let r = ask(format!("http://{svc}/start")).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["access-control-allow-origin"], "*");
+    let p: Value = r.json().await.unwrap();
+    assert_eq!(p["url"], format!("http://{svc}/start"));
+    assert_eq!(p["title"], "Une page");
+    assert_eq!(p["description"], "Avec une description");
+    assert_eq!(p["site"], "Exemple");
+    let img = p["image"].as_str().unwrap();
+    let data = img.strip_prefix("data:image/jpeg;base64,").expect("JPEG data URL");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+    assert!(bytes.len() <= 40 * 1024);
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (600, 400));
+
+    // Redirect to the metadata address is refused even in test mode.
+    assert_eq!(ask(format!("http://{svc}/evil")).await.status(), 403);
+    assert_eq!(ask(format!("http://{svc}/json")).await.status(), 502);
 }

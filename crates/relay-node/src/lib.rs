@@ -5,6 +5,9 @@
 //! The wire protocol is described in `docs/node-protocol.md`.
 
 pub mod http;
+pub mod netguard;
+pub mod preview;
+pub mod push;
 pub mod ratelimit;
 pub mod store;
 pub mod util;
@@ -22,6 +25,11 @@ use axum::Router;
 use clap::Parser;
 use tokio::sync::{Mutex, mpsc, watch};
 
+use crate::netguard::GuardedClient;
+use crate::preview::Previewer;
+use crate::push::Notifier;
+use crate::push::apns::Apns;
+use crate::push::webpush::Vapid;
 use crate::ratelimit::IpLimiter;
 use crate::store::Store;
 use crate::verifier::{CardVerifier, PermissiveVerifier};
@@ -74,6 +82,27 @@ pub struct Config {
     /// HTTP request burst per IP (token bucket size).
     #[arg(long, env = "RELAY_RATE_BURST", default_value_t = 100.0)]
     pub rate_burst: f64,
+
+    /// APNs auth key: the PEM text of the `.p8` file, or a path to it. APNs is off unless
+    /// this and the three settings below are all set.
+    #[arg(long, env = "RELAY_APNS_KEY_P8", hide_env_values = true)]
+    pub apns_key_p8: Option<String>,
+
+    /// APNs key id (10 characters, from the Apple developer account).
+    #[arg(long, env = "RELAY_APNS_KEY_ID")]
+    pub apns_key_id: Option<String>,
+
+    /// Apple developer team id.
+    #[arg(long, env = "RELAY_APNS_TEAM_ID")]
+    pub apns_team_id: Option<String>,
+
+    /// APNs topic: the iOS app bundle id.
+    #[arg(long, env = "RELAY_APNS_TOPIC")]
+    pub apns_topic: Option<String>,
+
+    /// Serve link previews at `/v1/preview`.
+    #[arg(long, env = "RELAY_PREVIEW", default_value_t = true, action = clap::ArgAction::Set)]
+    pub preview: bool,
 }
 
 impl Config {
@@ -88,6 +117,11 @@ impl Config {
             trust_proxy: false,
             rate_per_sec: 0.0,
             rate_burst: 100.0,
+            apns_key_p8: None,
+            apns_key_id: None,
+            apns_team_id: None,
+            apns_topic: None,
+            preview: true,
         }
     }
 
@@ -125,6 +159,9 @@ pub struct NodeState {
     pub(crate) next_conn: AtomicU64,
     pub(crate) http_limiter: IpLimiter,
     pub(crate) ice: serde_json::Value,
+    pub(crate) notifier: Notifier,
+    pub(crate) net: GuardedClient,
+    pub(crate) previewer: Previewer,
     pub(crate) shutdown: watch::Receiver<bool>,
     shutdown_tx: watch::Sender<bool>,
 }
@@ -139,8 +176,20 @@ impl NodeState {
     pub fn with_verifier(config: Config, verifier: Arc<dyn CardVerifier>) -> anyhow::Result<Arc<Self>> {
         std::fs::create_dir_all(config.data_dir.join("blobs"))?;
         let store = Store::open(&config.data_dir.join("relay.sqlite3"))?;
+        let apns = Apns::from_config(
+            config.apns_key_p8.as_deref(),
+            config.apns_key_id.as_deref(),
+            config.apns_team_id.as_deref(),
+            config.apns_topic.as_deref(),
+        )?;
+        tracing::info!(apns = apns.is_some(), "push senders ready");
+        let notifier = Notifier::new(apns, Vapid::load_or_create(&config.data_dir)?);
+        let net = GuardedClient::new(concat!("SomaRelayNode/", env!("CARGO_PKG_VERSION"), " (link preview)"));
         let (shutdown_tx, shutdown) = watch::channel(false);
         Ok(Arc::new(Self {
+            notifier,
+            net,
+            previewer: Previewer::default(),
             ice: config.ice_servers(),
             http_limiter: IpLimiter::new(config.rate_per_sec, config.rate_burst),
             config,
@@ -159,6 +208,17 @@ impl NodeState {
 
     pub(crate) fn conn_id(&self) -> u64 {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The VAPID public key (uncompressed P-256, base64url) for Web Push subscriptions.
+    pub fn vapid_public_key(&self) -> &str {
+        self.notifier.vapid.public_b64()
+    }
+
+    /// Tests only: lets link previews and Web Push reach 127.0.0.0/8 on any port over http.
+    #[doc(hidden)]
+    pub fn allow_loopback_for_tests(&self) {
+        self.net.allow_loopback_for_tests();
     }
 
     /// Tells every WebSocket connection to close.
@@ -181,6 +241,7 @@ impl NodeState {
             Err(e) => tracing::error!("sweep failed: {e}"),
         }
         self.http_limiter.prune();
+        self.previewer.limiter.prune();
     }
 }
 

@@ -29,6 +29,16 @@ pub enum Enqueue {
     QuotaExceeded,
 }
 
+/// Push registration of a mailbox (`push` frame). `kind` is `apns` (with `token`, `env`) or
+/// `webpush` (with `sub_json`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushReg {
+    pub kind: String,
+    pub token: Option<String>,
+    pub env: Option<String>,
+    pub sub_json: Option<String>,
+}
+
 /// Outcome of a directory claim.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Claim {
@@ -90,7 +100,15 @@ impl Store {
                  size INTEGER NOT NULL,
                  expires_at INTEGER NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS blobs_expiry ON blobs (expires_at);",
+             CREATE INDEX IF NOT EXISTS blobs_expiry ON blobs (expires_at);
+             CREATE TABLE IF NOT EXISTS push (
+                 mailbox BLOB PRIMARY KEY,
+                 kind TEXT NOT NULL,
+                 token TEXT,
+                 env TEXT,
+                 sub_json TEXT,
+                 updated_at INTEGER NOT NULL
+             );",
         )?;
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -279,6 +297,41 @@ impl Store {
         Ok(())
     }
 
+    // Push registrations.
+
+    /// Registers (or replaces) the push target of a mailbox.
+    pub fn set_push(&self, mailbox: &[u8; 16], reg: &PushReg, now: i64) -> rusqlite::Result<()> {
+        self.c().execute(
+            "INSERT INTO push (mailbox, kind, token, env, sub_json, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (mailbox) DO UPDATE SET kind = excluded.kind, token = excluded.token,
+                 env = excluded.env, sub_json = excluded.sub_json, updated_at = excluded.updated_at",
+            params![&mailbox[..], reg.kind, reg.token, reg.env, reg.sub_json, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_push(&self, mailbox: &[u8; 16]) -> rusqlite::Result<()> {
+        self.c().execute("DELETE FROM push WHERE mailbox = ?1", [&mailbox[..]])?;
+        Ok(())
+    }
+
+    /// Deletes the registration only if it is still `reg` (a newer one is kept).
+    pub fn delete_push_if(&self, mailbox: &[u8; 16], reg: &PushReg) -> rusqlite::Result<bool> {
+        let n = self.c().execute(
+            "DELETE FROM push WHERE mailbox = ?1 AND kind = ?2 AND token IS ?3 AND sub_json IS ?4",
+            params![&mailbox[..], reg.kind, reg.token, reg.sub_json],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn get_push(&self, mailbox: &[u8; 16]) -> rusqlite::Result<Option<PushReg>> {
+        self.c()
+            .query_row("SELECT kind, token, env, sub_json FROM push WHERE mailbox = ?1", [&mailbox[..]], |r| {
+                Ok(PushReg { kind: r.get(0)?, token: r.get(1)?, env: r.get(2)?, sub_json: r.get(3)? })
+            })
+            .optional()
+    }
+
     // Expiry.
 
     /// Deletes expired envelopes and blob rows. Returns the expired blob hashes so the caller
@@ -322,6 +375,40 @@ mod tests {
         assert!(s.pending(&mb, 11).unwrap().is_empty());
         let (n, shas) = s.sweep(11).unwrap();
         assert_eq!((n, shas), (1, vec!["ab".to_string()]));
+    }
+
+    #[test]
+    fn push_registrations() {
+        let s = Store::open_in_memory().unwrap();
+        let mb = [4u8; 16];
+        let a = PushReg { kind: "apns".into(), token: Some("aa".into()), env: Some("prod".into()), sub_json: None };
+        let b = PushReg { kind: "webpush".into(), token: None, env: None, sub_json: Some("{}".into()) };
+        assert_eq!(s.get_push(&mb).unwrap(), None);
+        s.set_push(&mb, &a, 1).unwrap();
+        assert_eq!(s.get_push(&mb).unwrap(), Some(a.clone()));
+        s.set_push(&mb, &b, 2).unwrap();
+        assert!(!s.delete_push_if(&mb, &a).unwrap(), "stale delete keeps the newer registration");
+        assert_eq!(s.get_push(&mb).unwrap(), Some(b.clone()));
+        assert!(s.delete_push_if(&mb, &b).unwrap());
+        s.set_push(&mb, &a, 3).unwrap();
+        s.delete_push(&mb).unwrap();
+        assert_eq!(s.get_push(&mb).unwrap(), None);
+    }
+
+    /// A database created before the push table existed gains it on open.
+    #[test]
+    fn migrates_old_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.sqlite3");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE bindings (mailbox BLOB PRIMARY KEY, pubkey BLOB NOT NULL, card BLOB, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);")
+            .unwrap();
+        let s = Store::open(&path).unwrap();
+        let reg = PushReg { kind: "apns".into(), token: Some("aa".into()), env: Some("prod".into()), sub_json: None };
+        s.set_push(&[1; 16], &reg, 1).unwrap();
+        drop(s);
+        assert_eq!(Store::open(&path).unwrap().get_push(&[1; 16]).unwrap(), Some(reg));
     }
 
     #[test]

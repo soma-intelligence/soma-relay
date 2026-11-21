@@ -1,5 +1,5 @@
 //! WebSocket mailbox protocol (`/v1/ws`): hello, challenge, auth, register, send, ack,
-//! presence, ping. See `docs/node-protocol.md`.
+//! presence, push, ping. See `docs/node-protocol.md`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,6 +56,15 @@ enum In {
     },
     Presence {
         mailboxes: Vec<String>,
+    },
+    Push {
+        kind: String,
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        env: Option<String>,
+        #[serde(default)]
+        sub: Option<serde_json::Value>,
     },
     Ping,
 }
@@ -294,7 +303,9 @@ async fn handle(
             match state.store.enqueue(&to, &id, &env, now_ms() + RETENTION_MS, MAILBOX_QUOTA) {
                 Ok(Enqueue::Stored) => {
                     let frame = json!({"t": "env", "id": id_hex, "env": b64(&env)}).to_string();
-                    push(state, &to, frame).await;
+                    if !push(state, &to, frame).await {
+                        crate::push::wake(state, to);
+                    }
                     out.push(json!({"t": "sent", "id": id_hex}).to_string());
                 }
                 Ok(Enqueue::Duplicate) => out.push(json!({"t": "sent", "id": id_hex, "dup": true}).to_string()),
@@ -320,6 +331,36 @@ async fn handle(
             }
         }
 
+        In::Push { kind, token, env, sub } => {
+            let Phase::Authed { mailbox, .. } = *phase else {
+                out.push(err("auth_required", "authenticate first"));
+                return Next::Continue;
+            };
+            let parsed = crate::push::parse_registration(
+                &kind,
+                token.as_deref(),
+                env.as_deref(),
+                sub.as_ref(),
+                state.notifier.apns_on(),
+                &state.net,
+            );
+            let stored = match parsed {
+                Ok(Some(reg)) => state.store.set_push(&mailbox, &reg, now_ms()),
+                Ok(None) => state.store.delete_push(&mailbox),
+                Err(e) => {
+                    out.push(json!({"t": "push", "ok": false, "reason": e.reason()}).to_string());
+                    return Next::Continue;
+                }
+            };
+            match stored {
+                Ok(()) => out.push(json!({"t": "push", "ok": true}).to_string()),
+                Err(e) => {
+                    tracing::error!("push registration failed: {e}");
+                    out.push(json!({"t": "push", "ok": false, "reason": "internal"}).to_string());
+                }
+            }
+        }
+
         In::Presence { mailboxes } => {
             if !matches!(phase, Phase::Authed { .. }) {
                 out.push(err("auth_required", "authenticate first"));
@@ -340,15 +381,18 @@ async fn handle(
 }
 
 /// Pushes a frame to every live connection of `mailbox`. A connection whose queue is full is
-/// dropped from the hub, which closes it once it drains.
-async fn push(state: &Arc<NodeState>, mailbox: &[u8; 16], frame: String) {
+/// dropped from the hub, which closes it once it drains. Returns whether at least one live
+/// connection took the frame.
+async fn push(state: &Arc<NodeState>, mailbox: &[u8; 16], frame: String) -> bool {
     let mut hub = state.hub.lock().await;
-    let Some(conns) = hub.conns.get_mut(mailbox) else { return };
+    let Some(conns) = hub.conns.get_mut(mailbox) else { return false };
     conns.retain(|_, tx| match tx.try_send(frame.clone()) {
         Ok(()) => true,
         Err(mpsc::error::TrySendError::Full(_)) | Err(mpsc::error::TrySendError::Closed(_)) => false,
     });
     if conns.is_empty() {
         hub.conns.remove(mailbox);
+        return false;
     }
+    true
 }
