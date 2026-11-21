@@ -80,3 +80,78 @@ Errors: one enum `RelayError { InvalidCard, KeyChanged, NoSession, Decrypt, Malf
 Storage, Group }` with a message string.
 
 Determinism hooks for tests: `RelayEngine::create_with_seed(name, seed: [u8;32])` (test builds only).
+
+## Implementation notes and deviations (relay-core 0.1, 2026-11-21)
+
+These are binding: the code in `crates/relay-core`, `crates/relay-ffi` and `crates/relay-wasm`
+behaves as written here wherever it differs from the contract above.
+
+Crates: `libcrux-ml-kem` 0.0.11 and `libcrux-ml-dsa` 0.0.11 both build for wasm32 (portable
+code), so no RustCrypto substitute was needed. `getrandom` 0.4 with `wasm_js` on wasm32 only;
+no crate in the relay-core graph pulls getrandom 0.2 or `rand_core` with getrandom. Channel
+passwords use `argon2` 0.5 (Argon2id, 19 MiB, 2 passes), once per join.
+
+Signature changes:
+- `join_channel(name, password) -> Result<()>` and `channel_encrypt(...) -> Result<Vec<u8>>`
+  throw (bad name, bad JSON). They are `throws` in Swift and throw in JS.
+- `seal_attachment` and `open_attachment` are methods of the engine (the engine owns the RNG).
+- `group_encrypt` returns the sender-key distribution envelopes FIRST and the group envelope
+  LAST. `group_add` returns `[key + log to the new member, op to each other member]`;
+  `group_remove` returns `[op to the removed member, new key + log to each remaining member]`.
+- `MeshRouter.frames_for(envelope, mtu)` has no clock: it timestamps the seen id with the latest
+  `now_ms` given to `on_frame`.
+- Infallible calls stay infallible: `remove_contact`, `set_verified`, `rename_contact` ignore an
+  unknown or malformed fingerprint; `contact_safety_words` returns `[]` and
+  `contact_safety_code` returns `""` for a malformed one; `mesh_tag_for` returns empty bytes for
+  an unknown contact; `retag_for_mesh` returns the input unchanged when it cannot retag.
+- `create_with_seed` and `regenerate_device_keys` exist only with the `testing` cargo feature.
+
+Additions:
+- `envelope_info(envelope) -> Result<String>`: `{"id","kind","tag","ttl","size"}` (hex), so a
+  client can address an envelope (`tag` of a direct envelope = recipient mailbox; `kind`
+  is `direct | group | channel | announce | control`).
+- `groups()` items also carry `"mailboxes"` (hex, same order as `members`).
+
+Bindings:
+- Swift: module `RelayCore` (file `apple/Sources/RelayCore/RelayCoreFFI.swift`), C module
+  `RelayCoreFFI` in `apple/Frameworks/RelayCoreFFI.xcframework`. `RelayEngine.create(displayName:)`
+  and `RelayEngine.restore(state:) throws` are static; `MeshRouter()` is an init. Struct results
+  (`add_contact`, `parse_compact_link`) are JSON strings. Errors: `RelayError.invalidCard(message:)`
+  etc. `MeshResult` is a Swift struct `{complete: Data?, forward: [Data], excludeLink: UInt32}`.
+- JS: `RelayEngine.create(name)`, `RelayEngine.restore(bytes)`, `new MeshRouter()`; times are
+  numbers (ms); lists of envelopes are `Uint8Array[]`; `open` returns a string or `undefined`;
+  `onFrame` returns `{complete: Uint8Array | null, forward: Uint8Array[], excludeLink: number}`.
+  Errors are `Error` objects whose `name` is the RelayError variant.
+
+Behaviour:
+- Cards: `relay1:` card is about 10.5 KB binary, 14.1 K characters (ML-DSA-87 key 2592 B and
+  signature 4627 B, two ML-KEM-1024 keys). `relay1c:` link is about 100 characters.
+- Safety words: BIP-39 French list (2048 words, NFC, `crates/relay-core/src/words_fr.txt`),
+  11 bits per word. Own words = first 44 bits of the fingerprint. Contact words and the
+  `418 902 377` code = SHA3-256("soma-relay/v1/safety" || lower fp || higher fp).
+- Opening: the first messages (until the peer answers) carry `ek`, the ML-KEM ciphertext, the
+  prekey id and a sealed blob (AES-GCM under a key from DH(EK, IK_B), DH(EK, SPK_B) and the KEM
+  secret) holding the sender's full card and its hybrid signature over the transcript. The outer
+  ratchet header carries a 16-byte pseudonymous session id in clear. Replayed openings are
+  refused through a cache of accepted ephemeral keys.
+- PQ ratchet: each side announces its ratchet ML-KEM key in headers until the peer acknowledges
+  it (`seen_kem`). On the first message of a new sending chain, once 50 messages or 24 hours
+  passed, the sender encapsulates to the peer's key; the step repeats on every message of that
+  chain and the receiver mixes it in during its DH ratchet step. The clock for this rule (and
+  for weekly sender-key rotation) is the `ts` field of the AppMessage JSON, else the latest
+  `now_ms` seen.
+- Mesh tag: HKDF of a per-contact secret (X25519 of both device keys, both fingerprints) and the
+  unix hour; `open` accepts the previous, current and next hour.
+- Groups: the op log (create, add, remove, rename, promote) is hybrid signed; ops carry member
+  cards, so members who are not contacts get added as unverified contacts when keys flow. Group
+  messages carry an 8-byte sender key id and are Ed25519 signed with a per-chain key. A group
+  envelope that arrives before its sender key: `open` returns `None` (group unknown) or
+  `Err(NoSession)` (group known, key not yet): keep it and retry after the next successful
+  `open`, it is not marked as seen. Key and op deliveries come out of `open` as an InboundJson
+  whose message is a synthetic AppMessage `{"kind":"group-op","group":{"id","event":"key" |
+  "update" | "removed","name","members","admins"}}`. `leave_group` is local only.
+- Channels: AES-GCM under HKDF(name [+ Argon2id(password)]), Ed25519 signed, 30 messages per
+  minute per sender key. `from` is the claimed fingerprint; it is checked only for contacts.
+- Frames: `ver(1)=1 || hops_left(1) || id(16) || index(u16 BE) || count(u16 BE) || payload`
+  (22-byte header). The frame id is the envelope id and `hops_left` starts at the envelope ttl.
+- wasm size: 772 KiB, 267 KiB gzip (opt-level s, wasm-opt -Oz).

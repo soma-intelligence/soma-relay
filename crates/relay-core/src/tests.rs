@@ -174,6 +174,12 @@ fn duplicates_and_replays_rejected() {
     let mut e = Envelope::from_bytes(&env).unwrap();
     e.id = [9u8; 16];
     assert!(b.open(&e.to_bytes(), T0).is_err());
+    // Replayed opening after the session is gone (contact removed and re-added).
+    let fa = a.fingerprint_hex();
+    b.remove_contact(&fa);
+    let mut e = Envelope::from_bytes(&env).unwrap();
+    e.id = [10u8; 16];
+    assert!(matches!(b.open(&e.to_bytes(), T0), Err(RelayError::Decrypt(_))));
 }
 
 #[test]

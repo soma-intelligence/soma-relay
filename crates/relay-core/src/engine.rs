@@ -64,6 +64,9 @@ struct State {
     groups: Vec<Group>,
     channels: Vec<Channel>,
     seen: VecDeque<[u8; 16]>,
+    /// Ephemeral keys of openings already accepted (replay guard once the
+    /// session itself is gone).
+    seen_inits: VecDeque<[u8; 32]>,
     now_ms: i64,
 }
 
@@ -188,6 +191,7 @@ impl RelayEngine {
                 groups: Vec::new(),
                 channels: Vec::new(),
                 seen: VecDeque::new(),
+                seen_inits: VecDeque::new(),
                 now_ms: 0,
             },
             rng,
@@ -568,6 +572,9 @@ impl RelayEngine {
             sessions.insert(0, s);
             (ci, plain)
         } else if let Some(init) = init {
+            if self.st.seen_inits.contains(&init.ek) {
+                return Err(RelayError::Decrypt("replayed opening".into()));
+            }
             let (card, session) = {
                 let me = Me {
                     fp: self.cache.fp,
@@ -590,6 +597,10 @@ impl RelayEngine {
             let sessions = &mut self.st.contacts[ci].sessions;
             sessions.insert(0, s);
             sessions.truncate(SESSIONS_PER_CONTACT);
+            self.st.seen_inits.push_back(init.ek);
+            while self.st.seen_inits.len() > SEEN_IDS {
+                self.st.seen_inits.pop_front();
+            }
             (ci, plain)
         } else {
             return Err(RelayError::NoSession("no session for this message".into()));
