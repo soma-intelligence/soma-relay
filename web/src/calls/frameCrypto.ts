@@ -8,8 +8,10 @@
 //                 H.264 up to and including the first slice NALU header + 1 byte;
 //                 other codecs: VP8 rule (E2EE calls negotiate VP8 or H.264 only).
 //   IV    = ssrc (u32 BE) || rtp timestamp (u32 BE) || send counter (u32 BE)
-//   keys  = key 0 = callKey(fp, call_id) used raw as AES-256-GCM; key n+1 = HKDF-SHA256(key n,
-//           salt "soma-relay call ratchet", info "ratchet"), new index every 5 minutes, ring of 16.
+//   keys  = material 0 = callKey(fp, call_id); AES-128-GCM key n = HKDF-SHA256(material n,
+//           salt "soma-relay call ratchet", info 128 zero bytes, 16 bytes);
+//           material n+1 = same HKDF with 32 bytes; new index every 5 minutes;
+//           keyIndex in the trailer = n mod 16 (ring of 16).
 
 export const IV_LENGTH = 12
 export const RATCHET_MS = 5 * 60_000
@@ -48,70 +50,74 @@ export function clearBytes(f: EncodedFrame, data: Uint8Array): number {
   return f.type === 'key' ? 10 : 3
 }
 
-async function hkdfNext(raw: Uint8Array): Promise<Uint8Array> {
-  const base = await crypto.subtle.importKey('raw', raw.slice().buffer as ArrayBuffer, 'HKDF', false, ['deriveBits'])
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new TextEncoder().encode('soma-relay call ratchet'),
-      info: new TextEncoder().encode('ratchet'),
-    },
-    base,
-    256,
-  )
-  return new Uint8Array(bits)
+const SALT = new TextEncoder().encode('soma-relay call ratchet')
+/** LiveKit's HKDF info for both the AES key and the ratchet: 128 zero bytes. */
+const INFO = new Uint8Array(128)
+
+async function hkdf(material: Uint8Array, bits: number): Promise<Uint8Array> {
+  const base = await crypto.subtle.importKey('raw', material.slice().buffer as ArrayBuffer, 'HKDF', false, ['deriveBits'])
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: SALT, info: INFO }, base, bits))
+}
+
+/** AES-128-GCM key of one material, as LiveKit's key provider derives it (never the raw material). */
+async function frameKey(material: Uint8Array): Promise<CryptoKey> {
+  const raw = await hkdf(material, 128)
+  return crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, 'AES-GCM', false, ['encrypt', 'decrypt'])
 }
 
 export class FrameCrypto {
   private keys: (CryptoKey | null)[] = new Array(KEY_RING).fill(null)
-  private raw: Uint8Array | null = null
-  private index = 0
+  /** Material of the highest derived index. */
+  private material: Uint8Array | null = null
+  /** Highest derived index (absolute, not modulo). */
+  private derived = 0
+  /** Index this side sends with, moves every RATCHET_MS. */
+  private sendIndex = 0
   private counter = 0
   private started = 0
-  private ratcheting = false
+  private deriving: Promise<void> = Promise.resolve()
   /** Frames that failed to decrypt (shown in debug). */
   failures = 0
   /** False: frames pass through untouched (the peer does not do frame E2EE). */
   enabled = false
 
-  async setKey(raw: Uint8Array) {
-    this.raw = raw.slice()
-    this.index = 0
+  async setKey(material: Uint8Array) {
+    this.material = material.slice()
+    this.derived = 0
+    this.sendIndex = 0
     this.keys.fill(null)
-    this.keys[0] = await this.importRaw(this.raw)
+    this.keys[0] = await frameKey(this.material)
     this.started = Date.now()
+    // Like iOS: keep the next index ready, so a peer whose timer fires first still decrypts.
+    await this.ensure(1)
   }
 
-  private importRaw(raw: Uint8Array) {
-    return crypto.subtle.importKey('raw', raw.slice().buffer as ArrayBuffer, 'AES-GCM', false, ['encrypt', 'decrypt'])
-  }
-
-  /** Derives keys up to `target` (index modulo the ring). */
-  private async ensure(target: number) {
-    if (!this.raw) return
-    let guard = 0
-    while (this.index < target && guard++ < KEY_RING) {
-      this.raw = await hkdfNext(this.raw)
-      this.index++
-      this.keys[this.index % KEY_RING] = await this.importRaw(this.raw)
-    }
+  /** Derives materials and keys up to absolute index `target`, one step at a time. */
+  private ensure(target: number): Promise<void> {
+    this.deriving = this.deriving.then(async () => {
+      let guard = 0
+      while (this.material && this.derived < target && guard++ < KEY_RING) {
+        this.material = await hkdf(this.material, 256)
+        this.derived++
+        this.keys[this.derived % KEY_RING] = await frameKey(this.material)
+      }
+    })
+    return this.deriving
   }
 
   private async maybeRatchet() {
-    if (this.ratcheting || !this.raw) return
+    if (!this.material) return
     const due = Math.floor((Date.now() - this.started) / RATCHET_MS)
-    if (due > this.index) {
-      this.ratcheting = true
-      await this.ensure(due)
-      this.ratcheting = false
+    if (due > this.sendIndex) {
+      await this.ensure(due + 1)
+      this.sendIndex = due
     }
   }
 
   async encrypt(frame: EncodedFrame): Promise<EncodedFrame | null> {
-    const key = this.keys[this.index % KEY_RING]
-    if (!key) return null
     void this.maybeRatchet()
+    const key = this.keys[this.sendIndex % KEY_RING]
+    if (!key) return null
     const data = new Uint8Array(frame.data)
     if (data.length === 0) return frame
     const clear = Math.min(clearBytes(frame, data), data.length)
@@ -134,7 +140,7 @@ export class FrameCrypto {
     out.set(ct, clear)
     out.set(iv, clear + ct.length)
     out[out.length - 2] = IV_LENGTH
-    out[out.length - 1] = this.index % 256
+    out[out.length - 1] = this.sendIndex % KEY_RING
     frame.data = out.buffer
     return frame
   }
@@ -145,8 +151,12 @@ export class FrameCrypto {
     const ivLength = data[data.length - 2]
     const keyIndex = data[data.length - 1]
     if (ivLength !== IV_LENGTH) return null
-    if (keyIndex > this.index % 256 && keyIndex - (this.index % 256) < KEY_RING) await this.ensure(keyIndex)
-    const key = this.keys[keyIndex % KEY_RING]
+    if (keyIndex >= KEY_RING) return null
+    // The index wraps at 16: a short step ahead of the highest derived index is the peer
+    // ratcheting first; anything else is the current or a recent key.
+    const ahead = (keyIndex - (this.derived % KEY_RING) + KEY_RING) % KEY_RING
+    if (ahead > 0 && ahead <= KEY_RING / 2) await this.ensure(this.derived + ahead)
+    const key = this.keys[keyIndex]
     if (!key) return null
     const clear = Math.min(clearBytes(frame, data), data.length)
     const ivStart = data.length - 2 - IV_LENGTH

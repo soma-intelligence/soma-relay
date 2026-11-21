@@ -190,8 +190,9 @@ export class CallManager {
   }
 
   private stripAdvert(sdp: string): { sdp: string; e2ee: boolean } {
-    const e2ee = sdp.includes(E2EE_LINE)
-    return { sdp: sdp.replace(E2EE_LINE + '\r\n', '').replace(E2EE_LINE, ''), e2ee }
+    // Session or media level, any position (iOS appends it as the last line).
+    const e2ee = /^a=x-soma-e2ee:lk1\s*$/m.test(sdp)
+    return { sdp: sdp.replace(/^a=x-soma-e2ee:lk1\s*\r?\n?/gm, ''), e2ee }
   }
 
   async handleSignal(peer: string, s: CallSignal) {
