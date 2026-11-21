@@ -144,63 +144,54 @@ Leave AEC/NS/AGC on. Only turn them off for a music mode, which we do not ship.
 
 ## Interop
 
-Status 2026-11-21. iOS uses the LiveKit libwebrtc fork (`webrtc-sdk/Specs` 150.7871.08, `RTCFrameCryptor` with `RTCFrameCryptorKeyProvider` in shared key mode, AES-GCM). Per the decision above, the LiveKit format is the reference; the web worker must produce and accept exactly this.
+Status 2026-11-21. One spec for both clients. iOS uses the LiveKit libwebrtc fork
+(`webrtc-sdk/Specs` 150.7871.08, `RTCFrameCryptor` with `RTCFrameCryptorKeyProvider` in shared
+key mode, AES-GCM). The web worker (`web/src/calls/frameCrypto.ts`, `web/src/calls/callManager.ts`)
+reproduces the same format, so the LiveKit behaviour is the reference.
 
-**Negotiation.** Each side appends `a=x-soma-e2ee:lk1` to the SDP it signals and strips it from the SDP it receives before `setRemoteDescription`. Frame E2EE runs only when both sides advertise it. If the peer does not, iOS turns its cryptors off and the call runs on DTLS-SRTP alone (the UI then does not show the frame-encryption badge).
+**Negotiation.** Each side appends `a=x-soma-e2ee:lk1` as the last line of the SDP it signals,
+and strips that line from the SDP it receives before `setRemoteDescription`. A receiver matches the
+line anywhere in the SDP (session or media level). Frame E2EE runs only when both offer and answer
+carry it. Otherwise both clients turn the transform off (frames pass through), the call runs on
+DTLS-SRTP alone and the UI does not show the frame-encryption badge (web call screen:
+`P2P · DTLS-SRTP` instead of `E2EE TRAME`). Web transform: `RTCRtpScriptTransform` in a worker,
+else `createEncodedStreams` (Chrome legacy).
 
-**Frame layout** (same as web today, checked against `api/crypto/frame_crypto_transformer.cc`):
-`clear header || AES-GCM(payload) incl. 16-byte tag || IV (12) || trailer [ivLength = 12, keyIndex]`, AAD = clear header.
-Clear header: audio 1 byte; VP8 10 bytes on key frames, 3 otherwise; H.264 up to the first IDR or non-IDR slice NALU start + 2 bytes; AV1 0 bytes. VP9 is not special-cased by LiveKit (0 bytes), so E2EE calls should keep H.264 or VP8.
-IV: LiveKit writes `ssrc (u32 BE) || rtp timestamp (u32 BE) || (timestamp - send_count mod 0xFFFF) (u32 BE)`. Receivers read the IV from the trailer, so the web IV recipe (`ssrc || timestamp || counter`) stays compatible as long as it never repeats under one key.
+**Keys.** The key material is never used raw as a cipher key.
+- `material_0 = callKey(peer_fp, call_id)` (32 bytes from relay-core, same on both sides).
+- AES key for index n: `HKDF-SHA256(ikm = material_n, salt = "soma-relay call ratchet",
+  info = 128 zero bytes, L = 16)`. The cipher is **AES-128-GCM** with a 16-byte tag.
+- Ratchet: `material_{n+1} = HKDF-SHA256(ikm = material_n, salt = "soma-relay call ratchet",
+  info = 128 zero bytes, L = 32)`.
+- `keyIndex` in the trailer = `n mod 16`. LiveKit drops frames with an index >= `keyRingSize` (16).
 
-**Keys (what web must change).** LiveKit never uses the key material raw:
-- `material_0 = callKey(fp, call_id)` (32 bytes from relay-core).
-- AES key for index n: `HKDF-SHA256(ikm = material_n, salt = "soma-relay call ratchet", info = 128 zero bytes, L = 16)`, so the cipher is **AES-128-GCM**, not AES-256 on the raw key.
-- Ratchet: `material_{n+1} = HKDF-SHA256(ikm = material_n, salt = "soma-relay call ratchet", info = 128 zero bytes, L = 32)`.
-- Key index in the trailer = `n mod 16` (ring of 16).
+**Rotation.** Every 5 minutes after the call key is set, each sender moves its send index from n
+to n + 1. Both clients keep `material_{n+1}` derived one step ahead, so keys n and n + 1 are always
+present and a receiver decrypts a peer whose timer fires first. Receivers pick the key by the
+trailer index; the web derives forward on demand when the index is up to 8 steps ahead (mod 16) of
+its highest derived index. iOS sets `ratchetWindowSize = 0` (no automatic ratchet on decrypt
+failure) and `failureTolerance = -1`. Keys are dropped on hang up.
 
-Web today uses `material_n` raw as an AES-256-GCM key and ratchets with `info = "ratchet"`. To align: derive the AES-128 key from each material with the 128-zero-byte info, and use the same 128-zero-byte info for the ratchet.
-
-**Rotation.** Every 5 minutes each sender moves its send index from n to n + 1. iOS installs `material_{n+1}` one step ahead (keys n and n + 1 are always present), so a receiver decrypts a peer whose timer fires first. Receivers pick the key by the trailer index. iOS sets `ratchetWindowSize = 0` (no automatic ratchet on decrypt failure) and `failureTolerance = -1`. Keys are dropped on hang up.
-
-**Deltas between the two sections, for web to close.** (1) LiveKit cannot take a raw AES key: `setSharedKey` always runs the HKDF above, so "push raw keys per index" is not possible on iOS; web must derive AES-128 keys from the material. (2) Ratchet info is 128 zero bytes, not `"ratchet"`. (3) `keyIndex` must stay below `keyRingSize` (LiveKit drops frames with an index >= 16), so use `n mod 16`, not `n mod 256`. (4) iOS appends the flag as the last SDP line and matches it anywhere in the SDP; web should also match it anywhere.
-
-**Not done yet.** No interop test has run between an iOS device and a browser. Steps 6 and 7 of the E2EE plan (DTLS fingerprints signed by the PQ session, call-verification code) are not built on iOS.
-
-## Interop (web client, 2026-11-21)
-
-What `web/src/calls/frameCrypto.ts` and `web/src/calls/callManager.ts` implement today. A native
-client must produce and accept exactly this to talk to the web.
-
-**Key.** `key0 = engine.callKey(peer_fp, call_id)` (32 bytes, same on both sides), imported raw as
-AES-256-GCM. Ratchet: `key(n+1) = HKDF-SHA256(ikm = key(n), salt = "soma-relay call ratchet",
-info = "ratchet", 32 bytes)`. The sender moves to the next index every 5 minutes after the call
-key was set. The receiver derives forward on demand from the key index in the trailer and keeps a
-ring of 16 keys. This is the LiveKit frame layout, not its key derivation: LiveKit's default
-`KeyProvider` salt and its ratchet salt must be set to these values on iOS (webrtc-sdk
-`RTCFrameCryptorKeyProvider` with `ratchetSalt = "soma-relay call ratchet"`, shared key mode,
-`keyRingSize = 16`), or the iOS side must ratchet itself and push raw keys per index.
-
-**Frame layout** (one encoded frame, same as LiveKit `FrameCryptor` AES-GCM):
+**Frame layout** (one encoded frame, LiveKit `api/crypto/frame_crypto_transformer.cc`):
 
 ```
-clear header || AES-256-GCM(payload) with 16-byte tag || IV (12) || ivLength (1 byte = 12) || keyIndex (1 byte)
+clear header || AES-128-GCM(payload) incl. 16-byte tag || IV (12) || ivLength (1 byte = 12) || keyIndex (1 byte)
 ```
 
-- Clear header, used as AAD: audio 1 byte; VP8 10 bytes on key frames, 3 bytes on delta frames;
-  H.264 (Annex B) every byte up to the first slice NAL (type 1 or 5) plus 2 bytes (NAL header and
-  the first slice header byte). Shorter frames are kept whole.
-- IV = `ssrc (u32 BE) || rtp timestamp (u32 BE) || frame counter (u32 BE, per sender, wraps)`.
-- `keyIndex` = ratchet index modulo 256.
+- AAD = clear header.
+- Clear header: audio 1 byte; VP8 10 bytes on key frames, 3 bytes otherwise; H.264 (Annex B)
+  every byte up to the first IDR or non-IDR slice NALU (type 5 or 1) plus 2 bytes (NAL header and
+  the first slice header byte); AV1 0 bytes. VP9 is not special-cased by LiveKit. A frame shorter
+  than its header is kept whole.
+- IV: receivers read it from the trailer, so the recipe is free as long as it never repeats under
+  one key. LiveKit writes `ssrc (u32 BE) || rtp timestamp (u32 BE) || (timestamp - send_count
+  mod 0xFFFF) (u32 BE)`; the web writes `ssrc || rtp timestamp || send counter (u32 BE, per
+  sender)`.
 
-**Negotiation.** Each side adds `a=x-soma-e2ee:lk1` at session level in its SDP. Frames are
-encrypted only when both offer and answer carry it; otherwise the transform passes frames through
-and the call screen shows `P2P · DTLS-SRTP` instead of `E2EE TRAME`. Transform: `RTCRtpScriptTransform` in a worker, else
-`createEncodedStreams` (Chrome legacy).
+**Codecs under frame E2EE.** The header rules exist only for VP8 and H.264, so E2EE calls keep
+those: the web sets codec preferences VP8 then H.264 (AV1 and VP9 dropped) when E2EE is on, and
+AV1, VP9, H.264, VP8 otherwise. Audio is Opus with the fmtp from section 3 of this document.
 
-**Codecs under frame E2EE.** The header rule exists only for VP8 and H.264, so with E2EE the web
-sets codec preferences VP8 then H.264 (AV1 and VP9 are dropped from the list). Without E2EE it
-keeps AV1, VP9, H.264, VP8. Audio is Opus with the fmtp from section 3 of this document.
-
-**Not done on web.** Adaptive RED, DTLS fingerprint signing (step 6 of section 4), the call
-verification code (step 7), and key zeroing beyond dropping references on hang up.
+**Not done yet.** No interop test has run between an iOS device and a browser. Steps 6 and 7 of
+the E2EE plan (DTLS fingerprints signed by the PQ session, call-verification code) are built on
+neither client. Web also lacks adaptive RED.
