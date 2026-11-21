@@ -14,10 +14,16 @@ The project is inspired by [bitchat](https://github.com/permissionlesstech/bitch
 
 | | |
 |---|---|
-| Chat | 1:1 conversations, delivery and read receipts, replies, reactions, typing state |
+| Chat | 1:1 conversations, delivery and read receipts, replies, reactions, edit, delete for everyone, forward, typing state, search |
 | Media | Photos (longest side 2048 px, HEIC on iPhone, WebP or AVIF on the web), 720p video (HEVC or H.264), voice notes (AAC, Opus when both ends support it), any file up to 100 MiB on the Internet path |
+| Documents | PDF, Word, PowerPoint, Excel, Keynote, Pages and more open inside the app (QuickLook on iPhone; PDF, Word and spreadsheets in the browser) |
+| Location | Send a pin or share your live position for 15 minutes, 1 hour or 8 hours |
+| Polls | Single or multiple choice, live results, closed by their creator |
+| Link previews | Built by the sender, so the person reading never fetches anything |
+| Disappearing messages | 5 minutes to 1 week, per conversation |
+| Notifications | Grouped per conversation, reply from the notification, mute, previews on or off. Push wakes the app without carrying any content |
 | Calls | Audio and video calls, peer to peer, with an extra end-to-end encryption layer on every frame |
-| Groups | Private groups with a signed member log |
+| Groups | Private groups with a signed member log and @mentions |
 | Channels | Public channels for people nearby (a stand, a festival, a building), with an optional password |
 | Directory | Optional `name@node` handles so people can find you without a QR code |
 | Bots | A bot runtime with a REST API and a webhook |
@@ -54,7 +60,7 @@ Metadata protection: sealed sender (the node never learns who sent a message), p
 
 The cryptographic core is one Rust crate, [`relay-core`](crates/relay-core), shared by every client. It builds to a Swift framework (UniFFI) and to WebAssembly (wasm-bindgen). The post-quantum primitives come from [libcrux](https://github.com/cryspen/libcrux), which is formally verified.
 
-Full details: [docs/specs/2026-11-21-soma-relay-design.md](docs/specs/2026-11-21-soma-relay-design.md).
+Full details: [docs/specs/2026-11-21-soma-relay-design.md](docs/specs/2026-11-21-soma-relay-design.md) and [docs/specs/2026-11-21-v1.1-messaging.md](docs/specs/2026-11-21-v1.1-messaging.md).
 
 ## Calls
 
@@ -121,6 +127,13 @@ Settings (flags or environment variables):
 | `RELAY_ICE_JSON` | | STUN/TURN servers handed to clients for calls |
 | `RELAY_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` behind a reverse proxy |
 | `RELAY_RATE_PER_SEC`, `RELAY_RATE_BURST` | `20`, `100` | Per-connection rate limit |
+| `RELAY_PREVIEW` | `true` | Serve `GET /v1/preview` (link previews for web clients) |
+| `RELAY_APNS_KEY_P8` | | APNs `.p8` key, PEM text or file path. APNs is on only when all four `RELAY_APNS_*` are set |
+| `RELAY_APNS_KEY_ID` | | APNs key id |
+| `RELAY_APNS_TEAM_ID` | | Apple developer team id |
+| `RELAY_APNS_TOPIC` | | iOS app bundle id |
+
+Web Push needs no setup: the node creates its VAPID key in `<data dir>/vapid.pem` on first start. Back it up with the database, because a new key breaks every browser subscription.
 
 The protocol is documented in [docs/node-protocol.md](docs/node-protocol.md). A node cannot read messages, cannot tell who sent them, and forgets them once they are delivered.
 
@@ -167,7 +180,8 @@ The web end-to-end tests (`cd web && pnpm e2e`) start a local node and run two b
 
 - The iOS app needs you to tap Send for SMS. That is an Apple rule.
 - MultipeerConnectivity is the iOS mesh today. A raw Bluetooth LE transport (compatible across platforms) is planned.
-- No push notifications yet: the app must be open or recently opened to receive Internet messages. Mesh messages wait for you on nearby phones.
+- Push notifications never carry content: they only wake the app, which then fetches and decrypts.
+- PowerPoint files open with QuickLook on iPhone; in the browser they are offered as a download.
 - One device per identity for now. Multi-device is planned.
 - Payments are out of scope for v1.
 
