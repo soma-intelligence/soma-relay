@@ -28,10 +28,19 @@ enum Cmd {
         /// URL that receives a JSON POST for each incoming message.
         #[arg(long, env = "RELAY_BOT_WEBHOOK")]
         webhook: Option<url::Url>,
+        /// Directory handle to claim on the node (3-32 chars from [a-z0-9_.-]).
+        #[arg(long, env = "RELAY_BOT_HANDLE", value_parser = parse_handle)]
+        handle: Option<String>,
         /// Engine state file (identity, contacts, sessions). Keep it private.
         #[arg(long, env = "RELAY_BOT_STATE", default_value = "./bot-state.bin")]
         state: PathBuf,
     },
+}
+
+fn parse_handle(h: &str) -> Result<String, String> {
+    let ok = (3..=32).contains(&h.len())
+        && h.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'.' | b'-'));
+    if ok { Ok(h.to_string()) } else { Err("3 to 32 characters from [a-z0-9_.-]".into()) }
 }
 
 #[tokio::main]
@@ -42,11 +51,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let Cmd::Serve { node: node_url, name, listen, webhook, state } = Cli::parse().cmd;
+    let Cmd::Serve { node: node_url, name, listen, webhook, handle, state } = Cli::parse().cmd;
 
     let (engine, created) = engine::load_or_create(&state, &name)?;
     let (token, new_token) = load_or_create_token(&state)?;
-    let settings = Settings { node_url, state_path: state.clone(), webhook, token: token.clone() };
+    let settings = Settings { node_url, state_path: state.clone(), webhook, token: token.clone(), handle };
     let (bot, outbox) = Bot::new(engine, settings, Inbox::open(inbox_path(&state)));
     if created {
         bot.save();

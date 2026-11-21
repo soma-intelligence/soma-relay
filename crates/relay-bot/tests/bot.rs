@@ -44,8 +44,11 @@ impl Engine for PlainEngine {
     fn safety_words(&self) -> Vec<String> {
         vec!["un".into(), "deux".into(), "trois".into(), "quatre".into()]
     }
-    fn my_card(&self, node_url: Option<String>) -> String {
+    fn my_card(&self, node_url: Option<String>, _handle: Option<String>) -> String {
         format!("relay1:{}", URL_SAFE_NO_PAD.encode(self.card_json(node_url).to_string()))
+    }
+    fn sign_directory_card(&self, card: &str) -> Result<Vec<u8>, EngineError> {
+        Ok(self.key.sign(card.as_bytes()).to_bytes().to_vec())
     }
     fn my_compact_link(&self, node_url: Option<String>) -> String {
         let j = json!({"fingerprint": self.fingerprint_hex(), "node_url": node_url});
@@ -95,7 +98,7 @@ impl Engine for PlainEngine {
         env.extend(hex::decode(&to.mailbox).unwrap());
         env.push(7);
         env.extend(rand_id());
-        let body = json!({"card": self.my_card(None), "msg": serde_json::from_str::<Value>(app_message_json).unwrap()});
+        let body = json!({"card": self.my_card(None, None), "msg": serde_json::from_str::<Value>(app_message_json).unwrap()});
         env.extend(body.to_string().as_bytes());
         Ok(env)
     }
@@ -133,7 +136,7 @@ struct TestBot {
 }
 
 async fn start_bot(node: SocketAddr, dir: &std::path::Path, name: &str, seed: u8, webhook: Option<String>) -> TestBot {
-    start_bot_with(node, dir, name, Arc::new(PlainEngine::new(name, seed)), webhook).await
+    start_bot_with(node, dir, name, Arc::new(PlainEngine::new(name, seed)), webhook, None).await
 }
 
 async fn start_bot_with(
@@ -142,6 +145,7 @@ async fn start_bot_with(
     name: &str,
     engine: Arc<dyn Engine>,
     webhook: Option<String>,
+    handle: Option<String>,
 ) -> TestBot {
     let token = format!("token-{name}-0123456789abcdef0123456789abcdef");
     let settings = Settings {
@@ -149,6 +153,7 @@ async fn start_bot_with(
         state_path: dir.join(format!("{name}.bin")),
         webhook: webhook.map(|w| w.parse().unwrap()),
         token: token.clone(),
+        handle,
     };
     let (bot, outbox) = Bot::new(engine, settings, Inbox::memory());
     tokio::spawn(node::run(bot.clone(), outbox));
@@ -300,7 +305,7 @@ async fn offline_bot_gets_messages_on_connect() {
 
     // Bravo's card, without Bravo being online (its mailbox is unbound at the node).
     let bravo = PlainEngine::new("bravo", 12);
-    let card = bravo.my_card(Some(format!("http://{node}")));
+    let card = bravo.my_card(Some(format!("http://{node}")), None);
     let r = http
         .post(format!("{}/v1/messages", a.api))
         .bearer_auth(&a.token)
@@ -321,8 +326,8 @@ async fn core_engines_exchange_encrypted_messages() {
 
     let dir = tempfile::tempdir().unwrap();
     let node = start_node(dir.path()).await;
-    let a = start_bot_with(node, dir.path(), "ada", Arc::new(CoreEngine::create("ada")), None).await;
-    let b = start_bot_with(node, dir.path(), "bob", Arc::new(CoreEngine::create("bob")), None).await;
+    let a = start_bot_with(node, dir.path(), "ada", Arc::new(CoreEngine::create("ada")), None, None).await;
+    let b = start_bot_with(node, dir.path(), "bob", Arc::new(CoreEngine::create("bob")), None, None).await;
     let http = reqwest::Client::new();
 
     // Ada only knows Bob's compact link: the full card comes from the node and is verified.
@@ -357,4 +362,37 @@ async fn core_engines_exchange_encrypted_messages() {
     let restored = CoreEngine::restore(&a.bot.engine.export_state()).unwrap();
     assert_eq!(restored.fingerprint_hex(), a.bot.engine.fingerprint_hex());
     assert_eq!(restored.contacts().len(), 1);
+}
+
+#[tokio::test]
+async fn handle_claimed_on_startup_and_used_to_send() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = start_node(dir.path()).await;
+    let w = start_bot_with(node, dir.path(), "weather", Arc::new(PlainEngine::new("weather", 21)), None, Some("weather".into())).await;
+    let http = reqwest::Client::new();
+
+    let mut found = false;
+    for _ in 0..100 {
+        let r = http.get(format!("http://{node}/v1/directory/weather")).send().await.unwrap();
+        if r.status() == 200 {
+            assert_eq!(r.headers()["x-relay-mailbox"], w.bot.engine.mailbox_hex());
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(found, "handle was not published");
+
+    // Another bot reaches it by handle@node.
+    let u = start_bot(node, dir.path(), "user", 22, None).await;
+    let r = http
+        .post(format!("{}/v1/messages", u.api))
+        .bearer_auth(&u.token)
+        .json(&json!({"to": format!("weather@http://{node}"), "text": "forecast?"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let msgs = wait_messages(&http, &w, 0, 1).await;
+    assert_eq!(msgs[0]["message"]["text"], "forecast?");
 }

@@ -29,6 +29,8 @@ pub struct Settings {
     pub webhook: Option<url::Url>,
     /// Bearer token for the message endpoints.
     pub token: String,
+    /// Directory handle to claim on the node at startup (`ines` for `ines@node`).
+    pub handle: Option<String>,
 }
 
 /// Shared bot state.
@@ -69,7 +71,7 @@ impl Bot {
     }
 
     pub fn my_card(&self) -> String {
-        self.engine.my_card(Some(self.node_base()))
+        self.engine.my_card(Some(self.node_base()), self.settings.handle.clone())
     }
 
     pub fn my_link(&self) -> String {

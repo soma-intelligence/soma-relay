@@ -98,6 +98,15 @@ async fn session(bot: &Arc<Bot>, outbox: &mut mpsc::Receiver<Outgoing>) -> anyho
     sink.send(Message::Text(register.to_string().into())).await?;
     bot.set_connected(true);
     tracing::info!(node = %bot.settings.node_url, "connected to node");
+    if let Some(handle) = bot.settings.handle.clone() {
+        let bot = bot.clone();
+        tokio::spawn(async move {
+            match claim_handle(&bot, &handle).await {
+                Ok(()) => tracing::info!("handle {handle} published"),
+                Err(e) => tracing::warn!("handle {handle} not published: {e}"),
+            }
+        });
+    }
 
     let mut pending: HashMap<String, oneshot::Sender<Result<(), String>>> = HashMap::new();
     let mut ping = tokio::time::interval(Duration::from_secs(25));
@@ -148,6 +157,28 @@ async fn session(bot: &Arc<Bot>, outbox: &mut mpsc::Receiver<Outgoing>) -> anyho
                 }
             }
         }
+    }
+}
+
+/// Publishes the card under `handle` (`PUT /v1/directory/{handle}`). Needs a prior auth on
+/// the node, which binds the mailbox key the signature is checked against.
+pub async fn claim_handle(bot: &Bot, handle: &str) -> Result<(), String> {
+    let card = bot.my_card();
+    let sig = bot.engine.sign_directory_card(&card).map_err(|e| e.to_string())?;
+    let r = bot
+        .http
+        .put(format!("{}/v1/directory/{handle}", bot.node_base()))
+        .header("X-Relay-Mailbox", bot.engine.mailbox_hex())
+        .header("X-Relay-Sig", b64(&sig))
+        .body(card)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if r.status().is_success() {
+        Ok(())
+    } else {
+        let status = r.status();
+        Err(format!("HTTP {status}: {}", r.text().await.unwrap_or_default()))
     }
 }
 

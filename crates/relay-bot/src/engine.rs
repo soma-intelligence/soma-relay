@@ -54,8 +54,8 @@ pub trait Engine: Send + Sync + 'static {
     fn fingerprint_hex(&self) -> String;
     fn mailbox_hex(&self) -> String;
     fn safety_words(&self) -> Vec<String>;
-    /// Full `relay1:` card advertising `node_url`.
-    fn my_card(&self, node_url: Option<String>) -> String;
+    /// Full `relay1:` card advertising `node_url` and the directory `handle`.
+    fn my_card(&self, node_url: Option<String>, handle: Option<String>) -> String;
     /// Compact `relay1c:` link (fits a QR code).
     fn my_compact_link(&self, node_url: Option<String>) -> String;
     /// Ed25519 public key used to authenticate to nodes (32 bytes).
@@ -75,6 +75,11 @@ pub trait Engine: Send + Sync + 'static {
     fn open(&self, envelope: &[u8], now_ms: i64) -> Result<Option<serde_json::Value>, EngineError>;
     /// Whole engine state, to be saved after every mutating call.
     fn export_state(&self) -> Vec<u8>;
+    /// Ed25519 signature of this identity's own card text, for `PUT /v1/directory/{handle}`
+    /// (`X-Relay-Sig`). Engines that cannot sign it return an error and the bot skips the claim.
+    fn sign_directory_card(&self, _card: &str) -> Result<Vec<u8>, EngineError> {
+        Err(EngineError("relay-core exposes no directory card signature yet".into()))
+    }
 }
 
 /// Loads the engine from `state_path`, or creates a new identity named `name` there.
@@ -148,8 +153,8 @@ impl Engine for CoreEngine {
     fn safety_words(&self) -> Vec<String> {
         self.lock().safety_words()
     }
-    fn my_card(&self, node_url: Option<String>) -> String {
-        self.lock().my_card(node_url, None)
+    fn my_card(&self, node_url: Option<String>, handle: Option<String>) -> String {
+        self.lock().my_card(node_url, handle)
     }
     fn my_compact_link(&self, node_url: Option<String>) -> String {
         self.lock().my_compact_link(node_url)
