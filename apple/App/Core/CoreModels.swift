@@ -127,6 +127,8 @@ nonisolated struct GroupJSON: Codable, Sendable, Identifiable, Equatable {
     var name: String
     var members: [String]
     var admins: [String]
+    /// Mailbox of each member (hex), same order as `members`.
+    var mailboxes: [String]? = nil
 }
 
 nonisolated enum JSON {
@@ -199,4 +201,8 @@ nonisolated extension String {
         }
         return parts.joined(separator: "·")
     }
+}
+
+extension Array {
+    nonisolated subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

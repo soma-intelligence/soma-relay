@@ -224,7 +224,8 @@ nonisolated final class MockRelayCore: RelayCoreAPI {
         }
         state.groups[groupId] = group
         let inner = MockInner(from: fingerprintHex(), card: "", msg: appMessageJson)
-        out.insert(MockEnvelope(kind: 2, tag: Self.groupTag(groupId), body: try seal(inner, key: SymmetricKey(data: keyData))).bytes, at: 0)
+        // Same order as relay-core: distribution envelopes first, group envelope last.
+        out.append(MockEnvelope(kind: 2, tag: Self.groupTag(groupId), body: try seal(inner, key: SymmetricKey(data: keyData))).bytes)
         return out
     }
 
@@ -239,7 +240,7 @@ nonisolated final class MockRelayCore: RelayCoreAPI {
     }
 
     func groups() -> String {
-        JSON.encode(state.groups.values.map { GroupJSON(id: $0.id, name: $0.name, members: $0.members, admins: $0.admins) }.sorted { $0.name < $1.name })
+        JSON.encode(state.groups.values.map { GroupJSON(id: $0.id, name: $0.name, members: $0.members, admins: $0.admins, mailboxes: $0.members.map(Self.mailbox)) }.sorted { $0.name < $1.name })
     }
 
     func groupAdd(groupId: String, fp: String) throws(RelayCoreError) -> [Data] {
@@ -301,6 +302,15 @@ nonisolated final class MockRelayCore: RelayCoreAPI {
     func makeMeshRouter() -> MeshRouterAPI { SwiftMeshRouter() }
 
     func envelopeTagHex(_ envelope: Data) -> String? { MockEnvelope(bytes: envelope)?.tag.hex }
+    func envelopeKind(_ envelope: Data) -> String? {
+        switch MockEnvelope(bytes: envelope)?.kind {
+        case 1: "direct"
+        case 2: "group"
+        case 3: "channel"
+        case nil: nil
+        default: "control"
+        }
+    }
 
     func signDetached(_ data: Data) -> Data? { try? signing.signature(for: data) }
 

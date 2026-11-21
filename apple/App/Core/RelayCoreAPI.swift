@@ -97,6 +97,8 @@ nonisolated protocol RelayCoreAPI: AnyObject {
 
     /// Hex routing tag of an envelope (mailbox for direct envelopes).
     func envelopeTagHex(_ envelope: Data) -> String?
+    /// `direct`, `group`, `channel`, `announce` or `control`.
+    func envelopeKind(_ envelope: Data) -> String?
     /// Ed25519 signature by the device key over arbitrary bytes (node directory PUT), nil when the
     /// core does not expose it.
     func signDetached(_ data: Data) -> Data?

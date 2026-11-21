@@ -60,6 +60,15 @@ final class AppModel {
     let demo: Bool
     private var saveTask: Task<Void, Never>?
     private var lastTypingSent: [String: Date] = [:]
+    @ObservationIgnored private var heldGroup: [HeldEnvelope] = []
+
+    private struct HeldEnvelope {
+        var env: Data
+        var transport: Transport
+        var hops: Int?
+        var ingress: String?
+        var at: Date
+    }
 
     init() {
         let args = UserDefaults.standard
@@ -278,20 +287,23 @@ final class AppModel {
                 let envs = try core.groupEncrypt(groupId: gid, appMessageJson: message.json())
                 scheduleSave()
                 var best: (transport: Transport, status: DeliveryStatus, relays: Int?) = (.local, .pending, nil)
-                if let groupEnv = envs.first {
+                // relay-core: sender-key distribution envelopes first, group envelope last. Send the
+                // keys first so members can open the message as soon as it lands.
+                for env in envs.dropLast() {
+                    guard let tag = core.envelopeTagHex(env), let member = contacts.first(where: { $0.mailbox == tag }) else { continue }
+                    _ = route(env, to: member, messageId: nil)
+                }
+                if let groupEnv = envs.last {
                     let meshSent = broadcastMesh(groupEnv)
                     var nodeSent = false
-                    for member in group.members where member != core.fingerprintHex() {
-                        guard let c = contact(member) else { continue }
-                        if node.send(envelope: groupEnv, to: c.mailbox) { nodeSent = true } else {
-                            enqueue(groupEnv, mailbox: c.mailbox, peer: member, messageId: message.id)
+                    let me = core.fingerprintHex()
+                    for (index, member) in group.members.enumerated() where member != me {
+                        guard let mailbox = group.mailboxes?[safe: index] ?? contact(member)?.mailbox else { continue }
+                        if nodeEnabled, node.send(envelope: groupEnv, to: mailbox) { nodeSent = true } else {
+                            enqueue(groupEnv, mailbox: mailbox, peer: member, messageId: message.id)
                         }
                     }
                     if nodeSent { best = (.node, .sent, nil) } else if meshSent > 0 { best = (.mesh, .sent, meshSent) }
-                }
-                for env in envs.dropFirst() {
-                    guard let tag = core.envelopeTagHex(env), let member = contacts.first(where: { $0.mailbox == tag }) else { continue }
-                    _ = route(env, to: member, messageId: nil)
                 }
                 update(message.id, transport: best.transport, status: best.status, relays: best.relays)
             case .channel:
@@ -401,19 +413,52 @@ final class AppModel {
 
     // MARK: Receiving
 
+    /// Keeps a group envelope whose sender key has not arrived yet (at most 128, for one day).
+    private func holdGroupEnvelope(_ env: Data, via transport: Transport, hops: Int?, ingress: String?) {
+        guard !heldGroup.contains(where: { $0.env == env }) else { return }
+        heldGroup.append(HeldEnvelope(env: env, transport: transport, hops: hops, ingress: ingress, at: Date()))
+        if heldGroup.count > 128 { heldGroup.removeFirst(heldGroup.count - 128) }
+    }
+
+    /// After a direct envelope (it may carry a sender key), try the held group envelopes again.
+    private func retryHeldGroupEnvelopes() {
+        guard let core, !heldGroup.isEmpty else { return }
+        let cutoff = Date().addingTimeInterval(-86_400)
+        let pending = heldGroup.filter { $0.at > cutoff }
+        heldGroup = []
+        for held in pending {
+            if let json = (try? core.open(envelope: held.env, nowMs: Clock.nowMs)) ?? nil {
+                handleOpened(json, via: held.transport, hops: held.hops, ingress: held.ingress)
+            } else {
+                heldGroup.append(held)
+            }
+        }
+        scheduleSave()
+    }
+
     func handleEnvelope(_ env: Data, via transport: Transport, hops: Int? = nil, ingress: String? = nil) {
         guard let core else { return }
-        let inbound: InboundJSON
+        let isGroup = core.envelopeKind(env) == "group"
+        let json: String?
         do {
-            guard let json = try core.open(envelope: env, nowMs: Clock.nowMs), let decoded = JSON.decode(InboundJSON.self, json) else {
-                scheduleSave()
-                return
-            }
-            inbound = decoded
+            json = try core.open(envelope: env, nowMs: Clock.nowMs)
         } catch {
+            // A group message that lands before its sender key: keep it, retry later.
+            if isGroup, case .noSession = error { holdGroupEnvelope(env, via: transport, hops: hops, ingress: ingress) }
             return
         }
         scheduleSave()
+        if let json {
+            handleOpened(json, via: transport, hops: hops, ingress: ingress)
+        } else if isGroup {
+            holdGroupEnvelope(env, via: transport, hops: hops, ingress: ingress)
+        }
+        if !isGroup { retryHeldGroupEnvelopes() }
+    }
+
+    private func handleOpened(_ json: String, via transport: Transport, hops: Int?, ingress: String?) {
+        guard let inbound = JSON.decode(InboundJSON.self, json) else { return }
+
         let known = contact(inbound.from) != nil
         if !known { reloadContacts() }
         if inbound.channel == nil {

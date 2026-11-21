@@ -101,11 +101,12 @@ nonisolated final class FFIRelayCore: RelayCoreAPI {
     func callKey(fp: String, callId: String) throws(RelayCoreError) -> Data { try run { try engine.callKey(fp: fp, callId: callId) } }
 
     // Client helpers
-    func envelopeTagHex(_ envelope: Data) -> String? {
-        guard let json = try? engine.envelopeInfo(envelope: envelope),
-            let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
-        else { return nil }
-        return obj["tag"] as? String
+    func envelopeTagHex(_ envelope: Data) -> String? { info(envelope)?["tag"] as? String }
+    func envelopeKind(_ envelope: Data) -> String? { info(envelope)?["kind"] as? String }
+
+    private func info(_ envelope: Data) -> [String: Any]? {
+        guard let json = try? engine.envelopeInfo(envelope: envelope) else { return nil }
+        return try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
     }
 
     /// The core does not expose a detached Ed25519 signature yet (node directory PUT).
