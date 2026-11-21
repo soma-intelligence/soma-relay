@@ -559,7 +559,10 @@ a {
   z-index: 3;
   padding: 16px 12px 0;
   padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: 14px;
   pointer-events: none;
+  /* Messages fade out under the header instead of showing through the glass. */
+  background: linear-gradient(to bottom, var(--bg) 0, var(--bg) calc(100% - 14px), transparent 100%);
 }
 .chat-head > * {
   pointer-events: auto;
