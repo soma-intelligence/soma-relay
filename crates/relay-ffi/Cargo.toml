@@ -1,0 +1,25 @@
+[package]
+name = "relay-ffi"
+description = "UniFFI bindings of relay-core (Swift, Kotlin)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "relay_ffi"
+crate-type = ["staticlib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+relay-core = { path = "../relay-core" }
+uniffi = { version = "=0.32.2" }
+serde = "1"
+serde_json = "1"
