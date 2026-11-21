@@ -64,7 +64,7 @@ struct MainTabs: View {
         }
         .onAppear {
             switch DemoData.screen {
-            case "contacts", "qr": tab = .contacts
+            case "contacts", "qr", "qr-verify": tab = .contacts
             case "settings": tab = .settings
             case "call": model.calls.showDemo(peer: DemoData.ines)
             default: break

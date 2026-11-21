@@ -88,7 +88,7 @@ struct ContactsView: View {
             }
             .sheet(isPresented: $showAdd) { AddContactView() }
             .sheet(isPresented: $showQR) { MyQRView() }
-            .onAppear { if DemoData.screen == "qr" { showQR = true } }
+            .onAppear { if DemoData.screen == "qr" || DemoData.screen == "qr-verify" { showQR = true } }
         }
     }
 }
