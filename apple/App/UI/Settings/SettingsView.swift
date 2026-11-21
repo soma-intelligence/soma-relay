@@ -48,7 +48,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Utiliser un nœud", isOn: $model.nodeEnabled)
                     if model.nodeEnabled {
-                        TextField("https://relay.somalabs.me", text: $nodeDraft)
+                        TextField(AppConfig.defaultNodeURL, text: $nodeDraft)
                             .keyboardType(.URL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -126,10 +126,10 @@ struct SettingsView: View {
                 }
                 Section {
                     LabeledContent("Cœur", value: model.usesRealCore ? "relay-core (Rust)" : "test (CryptoKit)")
-                    LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                    LabeledContent("Version", value: Self.version)
                     Link("Code source (AGPL-3.0)", destination: URL(string: "https://github.com/soma-intelligence/soma-relay")!)
                 } footer: {
-                    if !model.usesRealCore {
+                    if AppConfig.demoAllowed, !model.usesRealCore {
                         Text("Version de test : chiffrement classique uniquement, pas encore post-quantique.")
                     }
                 }
@@ -172,5 +172,12 @@ struct SettingsView: View {
         nodeDraft = text
         model.nodeURL = text
         Haptics.success()
+    }
+
+    private static var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? ""
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        return build.isEmpty ? short : "\(short) (\(build))"
     }
 }

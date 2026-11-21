@@ -10,7 +10,7 @@ enum DemoData {
     static let nadia = "e11a7f3c9d2b4a5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6"
     static let callWords = ["lanterne", "orage", "cobalt", "mesure"]
 
-    static var screen: String? { UserDefaults.standard.string(forKey: "RelayDemoScreen") }
+    static var screen: String? { AppConfig.demoAllowed ? UserDefaults.standard.string(forKey: "RelayDemoScreen") : nil }
 
     static func seed(_ model: AppModel) {
         model.adoptCore(MockRelayCore.create(displayName: "Quentin"))
