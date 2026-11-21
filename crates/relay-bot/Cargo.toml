@@ -1,0 +1,40 @@
+[package]
+name = "relay-bot"
+description = "Soma Relay bot runtime: an end-to-end encrypted contact behind a local REST API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "relay-bot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive", "env"] }
+futures-util = "0.3"
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+qrcode = "0.14"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha3 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+relay-node = { path = "../relay-node" }
+tempfile = "3"
