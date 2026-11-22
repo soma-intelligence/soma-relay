@@ -1,6 +1,6 @@
 # Soma Relay node. Run from this directory:
 #   docker compose up -d                          node only, http://localhost:8080
-#   RELAY_HOST=relay.example.org docker compose --profile tls up -d     node + Caddy (HTTPS)
+#   RELAY_HOSTS=relay.example.org docker compose --profile tls up -d     node + Caddy (HTTPS)
 #   docker compose --profile turn up -d           also start coturn (see README)
 
 services:
@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
     depends_on: [relay-node]
     environment:
-      RELAY_HOST: ${RELAY_HOST:-relay.example.org}
+      RELAY_HOSTS: ${RELAY_HOSTS:-${RELAY_HOST:-relay.example.org}}
     ports:
       - "80:80"
       - "443:443"

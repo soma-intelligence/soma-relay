@@ -56,6 +56,7 @@ Every flag has an environment variable. Flags win over the environment.
 | `RELAY_WEB_DIR` | `--web-dir` | `./web/dist` (`/app/web` in Docker) | web client served at `/` |
 | `RELAY_ICE_JSON` | `--ice-json` | Google and Cloudflare public STUN | ICE servers returned by `/v1/ice` |
 | `RELAY_TRUST_PROXY` | `--trust-proxy` | `false` | take the client IP from `X-Forwarded-For` (set it behind Caddy or nginx, never when exposed directly) |
+| `RELAY_AASA_APP_ID` | `--aasa-app-id` | `M968YV4J8W.me.somalabs.relay` | app id served in `/.well-known/apple-app-site-association` (`webcredentials`), for passkeys in the iOS app |
 | `RELAY_RATE_PER_SEC` | `--rate-per-sec` | `20` | HTTP requests per second per IP, `0` disables |
 | `RELAY_RATE_BURST` | `--rate-burst` | `100` | HTTP burst per IP |
 | `RELAY_LOG` | | `relay_node=info` | log filter (`tracing` syntax). Nothing logged includes message content. |
@@ -72,18 +73,22 @@ Clients need `https://` and `wss://`. The simplest way is Caddy, which gets cert
 its own. Point the DNS name at the machine, open ports 80 and 443, then:
 
 ```sh
-RELAY_HOST=relay.example.org RELAY_PUBLIC_URL=https://relay.example.org \
+RELAY_HOSTS=relay.example.org RELAY_PUBLIC_URL=https://relay.example.org \
 RELAY_TRUST_PROXY=true docker compose --profile tls up -d --build
 ```
 
 The bundled [`Caddyfile`](Caddyfile) is all it takes:
 
 ```
-{$RELAY_HOST:relay.example.org} {
+{$RELAY_HOSTS:relay.example.org} {
 	encode zstd gzip
 	reverse_proxy relay-node:8080
 }
 ```
+
+`RELAY_HOSTS` takes one host name or a comma separated list, for example
+`RELAY_HOSTS="relay.example.org, node.example.org"`; each gets its own certificate. The older
+single `RELAY_HOST` still works in `docker-compose.yml` when `RELAY_HOSTS` is not set.
 
 Caddy proxies WebSocket upgrades without extra settings. With Caddy in front you can stop
 publishing port 8080 (remove the `ports` entry of `relay-node`). Keep

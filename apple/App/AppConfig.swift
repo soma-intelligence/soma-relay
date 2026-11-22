@@ -3,9 +3,9 @@ import Foundation
 /// App-wide constants. The default relay node lives here and only here.
 nonisolated enum AppConfig {
     /// Default relay node: the public test node on an Azure VM with persistent storage and a TURN server (Soma Labs).
-    static let defaultNodeURL = "https://somarelay.westus2.cloudapp.azure.com"
+    static let defaultNodeURL = "https://relay.somalabs.me"
 
-    static var defaultNodeHost: String { URL(string: defaultNodeURL)?.host() ?? "somarelay.westus2.cloudapp.azure.com" }
+    static var defaultNodeHost: String { URL(string: defaultNodeURL)?.host() ?? "relay.somalabs.me" }
 
     /// Base of the encrypted SMS fallback link: `<defaultNodeURL>/m#<base64url envelope>`.
     static var smsLinkBase: String { defaultNodeURL + "/m#" }
