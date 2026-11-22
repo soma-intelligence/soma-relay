@@ -596,7 +596,8 @@ final class AppModel {
             let mentioned = core.map { message.mentions?.contains($0.fingerprintHex()) == true } ?? false
             Notifier.shared.post(
                 conversationId: conversationId, title: title, sender: kind == .direct ? nil : name(of: inbound.from),
-                body: preview, messageId: message.id, muted: db.conversation(conversationId)?.isMuted() == true && !mentioned)
+                body: preview, messageId: message.id, muted: db.conversation(conversationId)?.isMuted() == true && !mentioned,
+                photoKey: kind == .group ? Self.groupPhotoKey(peer) : kind == .direct ? inbound.from : nil)
         }
         messageVersion += 1
     }

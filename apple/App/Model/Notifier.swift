@@ -43,12 +43,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Posts a notification for an incoming message. Previews off: "Nouveau message" only.
-    func post(conversationId: String, title: String, sender: String?, body: String, messageId: String, muted: Bool) {
+    func post(conversationId: String, title: String, sender: String?, body: String, messageId: String, muted: Bool, photoKey: String? = nil) {
         guard !muted, let model else { return }
         let content = UNMutableNotificationContent()
         if model.notificationPreviews {
             content.title = title
             content.body = sender.map { "\($0) : \(body)" } ?? body
+            // The face as an attachment (no communication-notification entitlement needed).
+            if let photoKey, let attachment = avatarAttachment(photoKey, messageId: messageId) { content.attachments = [attachment] }
         } else {
             content.title = "Soma Relay"
             content.body = "Nouveau message"
@@ -60,6 +62,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.badge = NSNumber(value: model.conversations.reduce(0) { $0 + $1.unread })
         center.add(UNNotificationRequest(identifier: messageId, content: content, trigger: nil))
         removeGenericPushes()
+    }
+
+    /// A copy of the avatar JPEG for the notification. The system moves it into its own store.
+    private func avatarAttachment(_ key: String, messageId: String) -> UNNotificationAttachment? {
+        guard let data = model?.db.value(for: "avatar:" + key) else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("avatar-\(messageId).jpg")
+        guard (try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil else { return nil }
+        return try? UNNotificationAttachment(identifier: "avatar", url: url, options: [UNNotificationAttachmentOptionsTypeHintKey: "public.jpeg"])
     }
 
     /// The node's "Nouveau message" pushes carry no thread: once the real ones are posted they go.
@@ -93,9 +103,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let thread = notification.request.content.threadIdentifier
         let show = await MainActor.run { () -> Bool in
             // The app is open: the node push is redundant, and the open chat needs no banner.
-            guard !thread.isEmpty else { return false }
-            return Notifier.shared.model?.activeConversation != thread
+            guard !thread.isEmpty, let model = Notifier.shared.model else { return false }
+            return model.activeConversation != thread
         }
+        // The in-app glass banner already shows it: no second banner from the system.
+        let inApp = await MainActor.run { Notifier.shared.model?.messageBanner?.conversationId == thread }
+        if inApp { return [.list, .sound] }
         return show ? [.banner, .list, .sound] : []
     }
 

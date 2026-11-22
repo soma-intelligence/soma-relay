@@ -124,40 +124,59 @@ struct ContactDetailView: View {
     }
 }
 
-/// Create a private group from contacts.
+/// Create a private group: optional photo, name, members picked with checkmarks.
 struct NewGroupView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let created: (String) -> Void
     @State private var name = ""
-    @State private var selected: Set<String> = []
+    @State private var selected: [String] = []
+    @State private var photo: UIImage?
     @State private var error: String?
+    @FocusState private var nameFocused: Bool
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    TextField("Nom du groupe", text: $name)
+                    HStack(spacing: 14) {
+                        EditablePhoto(name: trimmed.isEmpty ? "?" : trimmed, photo: photo, size: 60, icon: photo == nil ? "camera" : nil, tint: Theme.softButton, cropTitle: "Photo du groupe") { image in
+                            withAnimation(.smooth) { photo = image }
+                        }
+                        TextField("Nom du groupe", text: $name)
+                            .font(.title3.weight(.semibold))
+                            .focused($nameFocused)
+                            .submitLabel(.done)
+                    }
+                    .padding(.vertical, 4)
+                } footer: {
+                    Text("Photo facultative. Toi seul pourras changer le nom et la photo.")
                 }
-                Section("Membres") {
+                if !selected.isEmpty {
+                    Section {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 14) {
+                                ForEach(selected, id: \.self) { fp in
+                                    VStack(spacing: 4) {
+                                        Avatar(name: model.name(of: fp), size: 48, photo: model.photo(for: fp))
+                                        Text(model.name(of: fp)).font(.caption).foregroundStyle(Theme.text).lineLimit(1)
+                                    }
+                                    .frame(width: 60)
+                                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+                }
+                Section(selected.isEmpty ? "Membres" : "Membres · \(selected.count)") {
                     if model.contacts.isEmpty {
                         Text("Ajoute d'abord des contacts.").foregroundStyle(Theme.secondary)
                     }
-                    ForEach(model.contacts) { contact in
-                        Button {
-                            if selected.contains(contact.fingerprint) { selected.remove(contact.fingerprint) } else { selected.insert(contact.fingerprint) }
-                            Haptics.select()
-                        } label: {
-                            HStack {
-                                ContactRow(contact: contact)
-                                Spacer()
-                                Image(systemName: selected.contains(contact.fingerprint) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selected.contains(contact.fingerprint) ? Theme.mesh : Theme.secondary)
-                                    .font(.title3)
-                            }
-                        }
-                        .accessibilityAddTraits(selected.contains(contact.fingerprint) ? .isSelected : [])
-                    }
+                    ContactChecklist(contacts: model.contacts, selected: $selected)
                 }
                 if let error {
                     Text(error).foregroundStyle(Theme.danger)
@@ -165,6 +184,7 @@ struct NewGroupView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background)
+            .animation(.smooth, value: selected)
             .navigationTitle("Nouveau groupe")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -172,15 +192,23 @@ struct NewGroupView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Créer") {
                         do {
-                            let id = try model.createGroup(name: name.trimmingCharacters(in: .whitespaces), members: Array(selected))
+                            let id = try model.createGroup(name: trimmed, members: selected)
+                            if let photo { model.setGroupProfile(String(id.dropFirst(2)), photo: .some(photo)) }
                             Haptics.success()
                             dismiss()
                             created(id)
                         } catch {
-                            self.error = error.message
+                            withAnimation { self.error = error.message }
                         }
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || selected.isEmpty)
+                    .disabled(trimmed.isEmpty || selected.isEmpty)
+                }
+            }
+            .onAppear {
+                if DemoData.screen == "new-group" {
+                    name = "Covoit retour"
+                    selected = [DemoData.ines, DemoData.jade]
+                    photo = DemoData.avatarArt(0x0B6E63, 0x6DD5FA, "🚐")
                 }
             }
         }

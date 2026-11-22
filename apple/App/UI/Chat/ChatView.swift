@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var smsLink: SMSPayload?
     @State private var viewer: ChatItem?
     @State private var showDetails = false
+    @State private var showGroup = false
     @State private var player = VoicePlayer()
     @State private var unreadAnchor: String?
     @State private var unreadCount = 0
@@ -51,6 +52,7 @@ struct ChatView: View {
 
     private var conversation: ConversationRecord? { model.conversations.first { $0.id == conversationId } ?? model.db.conversation(conversationId) }
     private var peer: ContactJSON? { conversation?.kind == .direct ? conversation?.peer.flatMap(model.contact) : nil }
+    private var groupId: String? { conversation?.kind == .group ? conversation?.peer : nil }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -203,6 +205,11 @@ struct ChatView: View {
                 NavigationStack { ContactDetailView(fingerprint: peer.fingerprint) }
             }
         }
+        .sheet(isPresented: $showGroup) {
+            if let groupId {
+                GroupDetailView(groupId: groupId) { dismiss() }
+            }
+        }
         .sheet(item: $forwardItem) { ForwardSheet(item: $0) }
         .sheet(item: $infoItem) { MessageInfoView(item: $0).presentationDetents([.medium, .large]) }
         .sheet(item: $emojiItem) { item in
@@ -279,12 +286,29 @@ struct ChatView: View {
             SystemLine(text: model.systemText(item))
                 .id(item.id)
         case .message(let item, let position, let showSender):
-            MessageRow(
+            let row = MessageRow(
                 item: item, position: position, showSender: showSender,
                 quoted: item.message.replyTo.flatMap { id in items.first { $0.id == id } },
-                player: player, flashing: flashId == item.id, maxWidth: width * 0.76, actions: actions)
-                .id(item.id)
-                .transition(insertion(for: item))
+                player: player, flashing: flashId == item.id, maxWidth: width * 0.7, actions: actions)
+            Group {
+                if conversation?.kind == .group, !item.isMine {
+                    // The sender's face next to the last bubble of each run.
+                    HStack(alignment: .bottom, spacing: 6) {
+                        if position.last {
+                            Avatar(name: model.name(of: item.sender), size: 28, tint: Theme.senderColor(item.sender).opacity(0.25), photo: model.photo(for: item.sender))
+                                .padding(.bottom, 16)
+                                .transition(.opacity)
+                        } else {
+                            Color.clear.frame(width: 28, height: 1)
+                        }
+                        row
+                    }
+                } else {
+                    row
+                }
+            }
+            .id(item.id)
+            .transition(insertion(for: item))
         }
     }
 
@@ -415,6 +439,13 @@ struct ChatView: View {
                 searching = true
                 query = "midi"
                 runSearch(keepIndex: false)
+            case "search-chat":
+                searching = true
+                query = "le"
+                runSearch(keepIndex: false)
+                if hits.count > 1 { step(-1) }
+            case "group-detail":
+                showGroup = true
             case "reactions":
                 if let target = items.last(where: { $0.message.kind == .text && !$0.isMine }) { emojiItem = target }
             default:
@@ -436,9 +467,15 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Retour")
             Button {
-                if peer != nil { showDetails = true }
+                if peer != nil { showDetails = true } else if groupId != nil { showGroup = true }
             } label: {
-                VStack(spacing: 1) {
+                HStack(spacing: 8) {
+                if let conversation, conversation.kind != .channel {
+                    Avatar(
+                        name: conversation.title, size: 34, icon: conversation.kind == .group ? "person.3.fill" : nil,
+                        photo: model.photo(of: conversation))
+                }
+                VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(conversation?.title ?? "")
                             .font(.system(size: 16, weight: .semibold))
@@ -454,11 +491,21 @@ struct ChatView: View {
                         .foregroundStyle(Theme.secondary)
                         .lineLimit(1)
                 }
+                Spacer(minLength: 0)
+                }
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint(peer != nil ? "Ouvre la fiche du contact" : "")
+            .accessibilityHint(peer != nil ? "Ouvre la fiche du contact" : groupId != nil ? "Ouvre les infos du groupe" : "")
+            Button {
+                withAnimation(.snappy) { searching = true }
+                searchFocused = true
+            } label: {
+                Image(systemName: "magnifyingglass").font(.system(size: 16, weight: .semibold)).roundIcon()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Rechercher dans la conversation")
             if let peer {
                 Button {
                     model.calls.start(with: peer.fingerprint, video: false)
@@ -511,6 +558,9 @@ struct ChatView: View {
             if peer != nil {
                 Button("Fiche du contact", systemImage: "person.crop.circle") { showDetails = true }
             }
+            if groupId != nil {
+                Button("Infos du groupe", systemImage: "person.3") { showGroup = true }
+            }
         } label: {
             Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold)).roundIcon()
         }
@@ -527,7 +577,9 @@ struct ChatView: View {
                 .onChange(of: query) { runSearch(keepIndex: false) }
                 .frame(minHeight: 44)
             if !query.isEmpty {
-                Text(hits.isEmpty ? "0" : "\(hitIndex + 1)/\(hits.count)")
+                Text(hits.isEmpty ? "aucun" : "\(hitIndex + 1) sur \(hits.count)")
+                    .contentTransition(.numericText())
+                    .animation(.snappy, value: hitIndex)
                     .font(Theme.mono(12))
                     .foregroundStyle(Theme.secondary)
                     .monospacedDigit()

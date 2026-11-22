@@ -8,6 +8,8 @@ struct ConversationsView: View {
     @State private var showNewGroup = false
     @State private var showJoinChannel = false
     @State private var showAddContact = false
+    @State private var showMyCard = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
     @State private var hits: [SearchHit] = []
 
@@ -71,6 +73,7 @@ struct ConversationsView: View {
                 }
                 }
             }
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.45, bounce: 0.15), value: rows.map(\.id))
             .searchable(text: $query, prompt: "Noms et messages")
             .task(id: query) {
                 try? await Task.sleep(for: .milliseconds(200))
@@ -94,6 +97,11 @@ struct ConversationsView: View {
                 }
                 .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button { showMyCard = true } label: { Image(systemName: "qrcode") }
+                        .accessibilityLabel("Ma carte")
+                        .accessibilityHint("Affiche ton QR en plein écran, pour te faire ajouter ou scanner quelqu'un")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Ajouter un contact", systemImage: "person.badge.plus") { showAddContact = true }
                         Button("Nouveau groupe", systemImage: "person.3") { showNewGroup = true }
@@ -111,6 +119,13 @@ struct ConversationsView: View {
                 ChatView(conversationId: route.conversationId, focus: route.focus)
             }
             .sheet(isPresented: $showAddContact) { AddContactView() }
+            .fullScreenCover(isPresented: $showMyCard) {
+                MyCardView { id in
+                    showMyCard = false
+                    path = NavigationPath()
+                    path.append(id)
+                }
+            }
             .sheet(isPresented: $showNewGroup) {
                 NewGroupView { id in path.append(id) }
             }
@@ -137,6 +152,12 @@ struct ConversationsView: View {
                 path.append(AppModel.directId(DemoData.malik))
             case "list-search":
                 query = "plan"
+            case "mycard":
+                showMyCard = true
+            case "new-group":
+                showNewGroup = true
+            case "group-detail", "search-chat":
+                path.append(AppModel.groupId("stand"))
             default:
                 break
             }
@@ -172,7 +193,7 @@ extension ConversationsView {
         if !rows.isEmpty {
             SwiftUI.Section("Conversations") {
                 ForEach(rows) { conversation in
-                    NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation) }
+                    NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation, highlight: query) }
                         .listRowBackground(Color.clear)
                 }
             }
@@ -183,6 +204,9 @@ extension ConversationsView {
                     NavigationLink(value: ChatRoute(conversationId: hit.conversationId, focus: hit.messageId)) {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack {
+                                if let c = model.conversations.first(where: { $0.id == hit.conversationId }) {
+                                    Avatar(name: c.title, size: 22, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil, photo: model.photo(of: c))
+                                }
                                 Text(hit.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
                                 Spacer()
                                 Text(ConversationRow.time(hit.ts)).font(Theme.mono(11)).foregroundStyle(Theme.secondary)
@@ -201,11 +225,20 @@ extension ConversationsView {
     }
 
     fileprivate func highlighted(_ text: String) -> AttributedString {
+        Self.highlight(text, query: query, font: .subheadline.weight(.semibold))
+    }
+
+    /// Every match of the query in bold, on a soft mesh-coloured mark.
+    static func highlight(_ text: String, query: String, font: Font) -> AttributedString {
         var out = AttributedString(text)
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let r = out.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) {
+        guard !q.isEmpty else { return out }
+        var start = out.startIndex
+        while start < out.endIndex, let r = out[start...].range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) {
             out[r].foregroundColor = Theme.text
-            out[r].font = .subheadline.weight(.semibold)
+            out[r].font = font
+            out[r].backgroundColor = Theme.mesh.opacity(0.18)
+            start = r.upperBound
         }
         return out
     }
@@ -227,6 +260,8 @@ private struct JoinChannelField: View {
 struct ConversationRow: View {
     @Environment(AppModel.self) private var model
     let conversation: ConversationRecord
+    /// Search text to mark in the title.
+    var highlight = ""
 
     var body: some View {
         HStack(spacing: 12) {
@@ -244,7 +279,7 @@ struct ConversationRow: View {
                 }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(conversation.title)
+                    Text(ConversationsView.highlight(conversation.title, query: highlight, font: .body.weight(.bold)))
                         .font(.body.weight(conversation.unread > 0 ? .semibold : .medium))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
@@ -268,8 +303,8 @@ struct ConversationRow: View {
                 HStack(spacing: 6) {
                     TransportBadge(transport: conversation.lastTransport)
                     Text(model.isTyping(conversation.id) ? "écrit…" : model.preview(of: conversation))
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.secondary)
+                        .font(.subheadline.weight(conversation.unread > 0 ? .medium : .regular))
+                        .foregroundStyle(conversation.unread > 0 ? Theme.text.opacity(0.8) : Theme.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if conversation.unread > 0 {
@@ -280,11 +315,14 @@ struct ConversationRow: View {
                             .padding(.horizontal, 7)
                             .frame(minWidth: 22, minHeight: 22)
                             .background(conversation.isMuted() ? Theme.dashed : Theme.mesh, in: Capsule())
+                            .contentTransition(.numericText())
+                            .transition(.scale.combined(with: .opacity))
                     }
                 }
             }
         }
         .padding(.vertical, 6)
+        .animation(.snappy(duration: 0.25), value: conversation.unread)
         .accessibilityElement(children: .combine)
         .accessibilityHint(conversation.unread > 0 ? "\(conversation.unread) non lus" : "")
     }

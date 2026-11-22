@@ -42,7 +42,12 @@ struct RootView: View {
             }
         }
         .tint(Theme.mesh)
-        .overlay(alignment: .top) { BannerView() }
+        .overlay(alignment: .top) {
+            VStack(spacing: 8) {
+                MessageBannerView()
+                BannerView()
+            }
+        }
         .fullScreenCover(isPresented: Binding(get: { model.calls.presented }, set: { model.calls.presented = $0 })) {
             CallView()
         }
@@ -67,6 +72,9 @@ struct MainTabs: View {
             SwiftUI.Tab("Réglages", systemImage: "gearshape", value: Tab.settings) {
                 SettingsView()
             }
+        }
+        .onChange(of: model.openRequest) { _, request in
+            if request != nil, tab != .conversations { tab = .conversations }
         }
         .onAppear {
             switch DemoData.screen {
@@ -102,6 +110,78 @@ struct BannerView: View {
                     withAnimation(.smooth) { model.banner = nil }
                 }
                 .accessibilityAddTraits(.isStaticText)
+        }
+    }
+}
+
+/// A message in another conversation: glass card at the top with the face, the name and the
+/// preview. Tap opens it, swipe up dismisses, it goes by itself after 4 s.
+struct MessageBannerView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drag: CGFloat = 0
+
+    var body: some View {
+        if let banner = model.messageBanner {
+            HStack(spacing: 12) {
+                Avatar(
+                    name: banner.title, size: 42, icon: banner.isGroup ? "person.3.fill" : nil,
+                    photo: banner.photoKey.flatMap { model.photos[$0] })
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(banner.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    Text(banner.preview)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: 560)
+            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .shadow(color: Theme.shadow, radius: 18, y: 8)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+            .offset(y: min(0, drag) + max(0, drag) * 0.15)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                Haptics.tap()
+                model.openRequest = ChatRoute(conversationId: banner.conversationId, focus: nil)
+                dismiss()
+            }
+            .gesture(
+                DragGesture(minimumDistance: 6)
+                    .onChanged { drag = $0.translation.height }
+                    .onEnded { value in
+                        if value.translation.height < -30 || value.predictedEndTranslation.height < -80 {
+                            dismiss()
+                        } else {
+                            withAnimation(.spring(duration: 0.3, bounce: 0.3)) { drag = 0 }
+                        }
+                    })
+            .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+            .id(banner.id)
+            .task(id: banner.id) {
+                drag = 0
+                Haptics.soft()
+                UIAccessibility.post(notification: .announcement, argument: "\(banner.title) : \(banner.preview)")
+                try? await Task.sleep(for: .seconds(4))
+                if model.messageBanner?.id == banner.id { dismiss() }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Ouvre la conversation")
+            .accessibilityAction(named: "Fermer") { dismiss() }
+        }
+    }
+
+    private func dismiss() {
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.1)) {
+            model.messageBanner = nil
         }
     }
 }
