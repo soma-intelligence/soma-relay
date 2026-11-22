@@ -48,6 +48,14 @@ targets:
           APS_ENVIRONMENT: development
         Release:
           APS_ENVIRONMENT: production
+    # Written by xcodegen into App/SomaRelay.entitlements. webcredentials binds passkeys to
+    # relay.somalabs.me (apple-app-site-association served by relay-node).
+    entitlements:
+      path: App/SomaRelay.entitlements
+      properties:
+        aps-environment: $(APS_ENVIRONMENT)
+        com.apple.developer.associated-domains:
+          - webcredentials:relay.somalabs.me
     info:
       path: App/Info.plist
       properties:
