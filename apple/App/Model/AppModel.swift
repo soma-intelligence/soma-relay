@@ -11,6 +11,8 @@ final class AppModel {
     static var defaultNodeURL: String { AppConfig.defaultNodeURL }
 
     var phase: Phase = .loading
+    /// Lock screen gate (passkey, then Face ID or the passcode).
+    let lock = LockController()
     private(set) var core: RelayCoreAPI?
     let db: AppDatabase
 
@@ -839,6 +841,7 @@ final class AppModel {
         MediaStore.wipe()
         Notifier.shared.clearAll()
         SecretBox.destroyKey()
+        lock.reset()
         for key in ["handle", "channels", "nodeURL"] { UserDefaults.standard.removeObject(forKey: key) }
         core = nil
         contacts = []

@@ -15,9 +15,16 @@ struct SomaRelayApp: App {
                 .onOpenURL { model.handle(url: $0) }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
-                    case .background: model.didEnterBackground()
-                    case .active: model.didBecomeActive()
-                    default: break
+                    case .background:
+                        model.lock.didEnterBackground(at: Date())
+                        model.didEnterBackground()
+                    case .inactive:
+                        // Coming back from the background: relock before the first active frame.
+                        model.lock.willEnterForeground(at: Date())
+                    case .active:
+                        model.lock.willEnterForeground(at: Date())
+                        model.didBecomeActive()
+                    @unknown default: break
                     }
                 }
         }
@@ -26,6 +33,7 @@ struct SomaRelayApp: App {
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -41,6 +49,7 @@ struct RootView: View {
                     .transition(.opacity)
             }
         }
+        .accessibilityHidden(lockShown)
         .tint(Theme.mesh)
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
@@ -48,8 +57,23 @@ struct RootView: View {
                 BannerView()
             }
         }
+        .overlay { lockOverlay }
         .fullScreenCover(isPresented: Binding(get: { model.calls.presented }, set: { model.calls.presented = $0 })) {
             CallView()
+        }
+    }
+
+    private var lockShown: Bool { model.phase != .onboarding && model.lock.enabled && model.lock.isLocked }
+
+    /// The lock screen, and the same screen as a privacy cover over the app switcher snapshot.
+    @ViewBuilder private var lockOverlay: some View {
+        if model.phase != .onboarding, model.lock.enabled {
+            if model.lock.isLocked {
+                LockView(lock: model.lock)
+                    .transition(.opacity)
+            } else if scenePhase != .active {
+                LockView(lock: model.lock, coverOnly: true)
+            }
         }
     }
 }

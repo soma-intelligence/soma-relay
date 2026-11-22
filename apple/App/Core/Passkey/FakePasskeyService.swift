@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stand-in for UI tests, picked by the launch argument `-uitest-passkey ok|noprf|fail`.
+/// Stand-in for UI tests, picked by the launch argument `-uitest-passkey ok|noprf|fail|nocred`.
 /// The constants below are a contract: UI tests and the vault seeding tool reuse them.
 nonisolated struct FakePasskeyService: PasskeyProviding {
     enum Mode: String, Sendable {
@@ -10,6 +10,8 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
         case noprf
         /// Every call throws `PasskeyFailure.cancelled`.
         case fail
+        /// No passkey on the device: every call throws `PasskeyFailure.noCredential`.
+        case nocred
     }
 
     static let launchArgument = "-uitest-passkey"
@@ -34,6 +36,7 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
         case .ok: PasskeyRegistration(credentialID: Self.credentialID, prfSupported: true)
         case .noprf: PasskeyRegistration(credentialID: Self.credentialID, prfSupported: false)
         case .fail: throw PasskeyFailure.cancelled
+        case .nocred: throw PasskeyFailure.noCredential
         }
     }
 
@@ -42,6 +45,7 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
         case .ok: PasskeyAssertion(credentialID: Self.credentialID, prfFirst: Self.prfFirst, prfSecond: Self.prfSecond)
         case .noprf: PasskeyAssertion(credentialID: Self.credentialID, prfFirst: nil, prfSecond: nil)
         case .fail: throw PasskeyFailure.cancelled
+        case .nocred: throw PasskeyFailure.noCredential
         }
     }
 }

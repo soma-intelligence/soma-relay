@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Node, identity, visibility, safety words, export and emergency wipe.
+/// Node, identity, lock, visibility, safety words, export and emergency wipe.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var name = ""
@@ -9,9 +9,11 @@ struct SettingsView: View {
     @State private var confirmWipe = false
     @State private var exportURL: URL?
     @State private var showExport = false
+    @State private var lockChanging = false
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var lock = model.lock
         NavigationStack {
             Form {
                 Section {
@@ -41,6 +43,21 @@ struct SettingsView: View {
                     Text("Tes mots")
                 } footer: {
                     Text("Ils résument ta clé publique. Pour vérifier un contact, comparez plutôt les mots de sa fiche : ils dépendent de vos deux clés.")
+                }
+                Section {
+                    Toggle("Verrouiller Relay", isOn: Binding(get: { model.lock.enabled }, set: setLock))
+                        .disabled(lockChanging)
+                    if model.lock.enabled {
+                        Picker("Verrouiller après", selection: $lock.delay) {
+                            ForEach(RelockDelay.allCases) { delay in
+                                Text(delay.title).tag(delay)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Sécurité")
+                } footer: {
+                    Text("Relay te demande ta clé d'accès, Face ID ou ton code à l'ouverture. Tes messages continuent d'arriver pendant que l'app est verrouillée.")
                 }
                 Section {
                     Toggle("Aperçus dans les notifications", isOn: $model.notificationPreviews)
@@ -174,6 +191,21 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("Ton identité disparaît de ce téléphone. Sans export, personne ne pourra la récupérer.")
+            }
+        }
+    }
+
+    /// Turning the lock on or off needs one successful unlock.
+    private func setLock(_ on: Bool) {
+        guard !lockChanging else { return }
+        lockChanging = true
+        Task {
+            defer { lockChanging = false }
+            let done = on ? await model.lock.enable() : await model.lock.disable()
+            if done {
+                Haptics.success()
+            } else {
+                model.banner = on ? "Verrouillage non activé : le déverrouillage a échoué." : "Verrouillage toujours actif : le déverrouillage a échoué."
             }
         }
     }

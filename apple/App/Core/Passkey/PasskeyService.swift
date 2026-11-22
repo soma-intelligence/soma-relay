@@ -43,7 +43,7 @@ protocol PasskeyProviding: Sendable {
     func assert(credentialID: Data?) async throws -> PasskeyAssertion
 }
 
-/// The service the app uses: the fake when launched with `-uitest-passkey ok|noprf|fail`,
+/// The service the app uses: the fake when launched with `-uitest-passkey ok|noprf|fail|nocred`,
 /// else the platform passkey service.
 enum PasskeyService {
     static let current: any PasskeyProviding = FakePasskeyService.fromLaunchArguments() ?? PlatformPasskeyService()
