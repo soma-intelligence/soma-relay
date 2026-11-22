@@ -114,6 +114,9 @@ final class CallManager: NSObject {
     // MARK: Incoming signalling
 
     func handle(_ signal: AppMessage.CallSignal, from fp: String) {
+        // The web client opens WebRTC data-channel links with call signals whose id starts with
+        // "dc:". The app has no data-channel transport: ignore them, or they ring as a call.
+        guard !signal.callId.hasPrefix("dc:") else { return }
         switch signal.action {
         case .offer:
             if isBusy, current?.id != signal.callId {
