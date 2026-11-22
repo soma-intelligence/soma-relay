@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { expireLabel, relay } from '../state/relay'
 import { EXPIRE_CHOICES, MUTE_ALWAYS } from '../state/types'
-import { Avatar, copyText, Sheet, useRelay } from './common'
+import { Avatar, Sheet, useRelay } from './common'
 import { CipherQR, type CipherStage } from './CipherQR'
 import { QrScanner } from './QrScanner'
-import { Check, Copy, Phone, Shield, Video } from './Icons'
+import { AvatarPicker } from './PhotoEditor'
+import { Check, Pencil, People, Phone, Shield, Video } from './Icons'
 
 function wordLines(words: string[]): string[] {
   return [words.slice(0, 2).join(' '), words.slice(2).join(' ')]
@@ -106,96 +107,6 @@ export function AddContactSheet({ onClose, onAdded }: { onClose: () => void; onA
   )
 }
 
-/**
- * My code: the compact link as a cipher QR. When someone adds me while it is open (a new
- * contact appears), the tile dissolves and settles into our four safety words.
- */
-export function MyCodeSheet({ onClose }: { onClose: () => void }) {
-  const snap = useRelay()
-  const me = snap.me!
-  const [stage, setStage] = useState<CipherStage>(() => ({ kind: 'code', text: relay.myCompactLink() }))
-  const [peer, setPeer] = useState<string | null>(null)
-  const known = useRef(new Set(snap.contacts.map((c) => c.fingerprint)))
-  const [copied, setCopied] = useState<'link' | 'card' | null>(null)
-
-  useEffect(() => {
-    const fresh = snap.contacts.find((c) => !known.current.has(c.fingerprint))
-    if (!fresh || peer) return
-    setPeer(fresh.fingerprint)
-    setStage({ kind: 'connecting' })
-    const t = setTimeout(
-      () => setStage({ kind: 'verify', lines: wordLines(relay.safetyWords(fresh.fingerprint)) }),
-      900,
-    )
-    return () => clearTimeout(t)
-  }, [snap.contacts, peer])
-
-  const copy = async (what: 'link' | 'card') => {
-    const ok = await copyText(what === 'link' ? relay.myCompactLink() : relay.myCard())
-    if (ok) {
-      setCopied(what)
-      setTimeout(() => setCopied(null), 1600)
-    }
-  }
-  const peerContact = peer ? snap.contacts.find((c) => c.fingerprint === peer) : null
-
-  return (
-    <Sheet title={peerContact ? `Connecté à ${peerContact.name}` : 'Mon code'} onClose={onClose}>
-      <div className="qr-box">
-        <CipherQR
-          stage={stage}
-          label={stage.kind === 'verify' ? `Mots de sécurité : ${stage.lines.join(' ')}` : 'Ton code QR Soma Relay'}
-        />
-      </div>
-      {peerContact ? (
-        <>
-          <p className="hint center" style={{ marginTop: 14 }}>
-            Mêmes mots sur son écran ? Alors personne ne s’est glissé entre vous.
-          </p>
-          <div className="row-btns">
-            <button
-              className="btn primary"
-              onClick={() => {
-                relay.setVerified(peerContact.fingerprint, true)
-                onClose()
-              }}
-            >
-              <Check /> Les mots sont identiques
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="words" aria-label="Tes mots d’empreinte">
-            {me.words.map((w) => (
-              <span className="word" key={w}>
-                {w}
-              </span>
-            ))}
-          </div>
-          <p className="fp-grid">{me.fingerprint.toUpperCase().match(/.{1,4}/g)?.join('·')}</p>
-          {snap.settings.handle && (
-            <p className="center mono" style={{ fontSize: 13 }}>
-              {snap.settings.handle}@{new URL(snap.nodeBase).host}
-            </p>
-          )}
-          <div className="row-btns">
-            <button className="btn" onClick={() => void copy('link')}>
-              <Copy /> {copied === 'link' ? 'Copié' : 'Lien court'}
-            </button>
-            <button className="btn" onClick={() => void copy('card')}>
-              <Copy /> {copied === 'card' ? 'Copié' : 'Carte complète'}
-            </button>
-          </div>
-          <p className="hint center" style={{ marginTop: 12 }}>
-            Le lien court suffit quand ton nœud est joignable. La carte complète marche partout.
-          </p>
-        </>
-      )}
-    </Sheet>
-  )
-}
-
 /** Contact details, safety words and verification. */
 export function ContactSheet({ fp, onClose }: { fp: string; onClose: () => void }) {
   const snap = useRelay()
@@ -212,7 +123,7 @@ export function ContactSheet({ fp, onClose }: { fp: string; onClose: () => void 
   return (
     <Sheet title={c.name} onClose={onClose}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-        <Avatar name={c.name} online={snap.online.has(c.mailbox)} />
+        <Avatar id={fp} name={c.name} online={snap.online.has(c.mailbox)} size={64} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="mono" style={{ fontSize: 11, color: 'var(--muted)', overflowWrap: 'anywhere' }}>
             {c.fingerprint.toUpperCase().match(/.{1,4}/g)?.join('·')}
@@ -317,40 +228,78 @@ export function NewGroupSheet({ onClose, onCreated }: { onClose: () => void; onC
   const snap = useRelay()
   const [name, setName] = useState('')
   const [picked, setPicked] = useState<string[]>([])
+  const [q, setQ] = useState('')
+  const [photo, setPhoto] = useState<Uint8Array | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const toggle = (fp: string) => setPicked((p) => (p.includes(fp) ? p.filter((x) => x !== fp) : [...p, fp]))
+  const photoUrl = useMemo(() => (photo ? URL.createObjectURL(new Blob([photo.slice().buffer as ArrayBuffer], { type: 'image/jpeg' })) : null), [photo])
+  useEffect(() => () => void (photoUrl && URL.revokeObjectURL(photoUrl)), [photoUrl])
+  const needle = q.trim().toLowerCase()
+  const list = [...snap.contacts]
+    .filter((c) => !needle || c.name.toLowerCase().includes(needle))
+    .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
   return (
     <Sheet title="Nouveau groupe" onClose={onClose}>
       <form
         onSubmit={async (e) => {
           e.preventDefault()
+          if (busy) return
+          setBusy(true)
           try {
-            onCreated(await relay.createGroup(name, picked))
+            onCreated(await relay.createGroup(name, picked, photo))
           } catch (err) {
             setError(err instanceof Error ? err.message : 'Création impossible.')
+            setBusy(false)
           }
         }}
       >
-        <div className="field">
-          <label htmlFor="group-name">Nom du groupe</label>
-          <input id="group-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Festival" maxLength={60} />
+        <div className="group-id">
+          <span className={`avatar group-photo${photoUrl ? ' has-photo' : ''}`} aria-hidden="true" style={{ width: 64, height: 64, borderRadius: 32 }}>
+            {photoUrl ? <img className="avatar-img ready" src={photoUrl} alt="" /> : <People size={26} />}
+          </span>
+          <div className="field" style={{ flex: 1, margin: 0 }}>
+            <label htmlFor="group-name">Nom du groupe</label>
+            <input id="group-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Festival" maxLength={60} />
+          </div>
         </div>
-        <fieldset style={{ border: 0, padding: 0, margin: '0 0 16px' }}>
-          <legend className="lbl hint" style={{ fontWeight: 600, marginBottom: 6 }}>
-            Membres · {picked.length}
+        <AvatarPicker has={!!photo} onPick={(jpeg) => setPhoto(jpeg)} compact selfie={false} />
+        {picked.length > 0 && (
+          <div className="picked" aria-label="Membres choisis">
+            {picked.map((fp) => (
+              <button type="button" key={fp} className="picked-chip" onClick={() => toggle(fp)} aria-label={`Retirer ${relay.nameOf(fp)}`}>
+                <Avatar id={fp} name={relay.nameOf(fp)} size={44} />
+                <span>{relay.nameOf(fp).split(' ')[0]}</span>
+                <i aria-hidden="true">×</i>
+              </button>
+            ))}
+          </div>
+        )}
+        <fieldset className="pick-list">
+          <legend className="lbl hint">
+            Membres · {picked.length} sur {snap.contacts.length}
           </legend>
+          {snap.contacts.length > 6 && (
+            <input type="search" className="pick-search" placeholder="Chercher un contact" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Chercher un contact" />
+          )}
           {snap.contacts.length === 0 && <p className="hint">Ajoute d’abord des contacts.</p>}
-          {snap.contacts.map((c) => (
-            <label className="check-row" key={c.fingerprint}>
-              <input type="checkbox" checked={picked.includes(c.fingerprint)} onChange={() => toggle(c.fingerprint)} />
-              <Avatar name={c.name} small />
-              <span>{c.name}</span>
-            </label>
-          ))}
+          {list.map((c) => {
+            const on = picked.includes(c.fingerprint)
+            return (
+              <label className={`pick-row${on ? ' on' : ''}`} key={c.fingerprint}>
+                <input type="checkbox" className="sr-only" checked={on} onChange={() => toggle(c.fingerprint)} />
+                <Avatar id={c.fingerprint} name={c.name} small />
+                <span className="pick-name">{c.name}</span>
+                <span className="checkmark" aria-hidden="true">
+                  <Check size={14} />
+                </span>
+              </label>
+            )
+          })}
         </fieldset>
         {error && <p className="error">{error}</p>}
-        <button className="btn primary block" disabled={!name.trim() || picked.length === 0}>
-          Créer le groupe
+        <button className="btn primary block" disabled={!name.trim() || picked.length === 0 || busy}>
+          {busy ? 'Création…' : picked.length ? `Créer le groupe à ${picked.length + 1}` : 'Créer le groupe'}
         </button>
       </form>
     </Sheet>
@@ -360,71 +309,145 @@ export function NewGroupSheet({ onClose, onCreated }: { onClose: () => void; onC
 export function GroupSheet({ gid, onClose }: { gid: string; onClose: () => void }) {
   const snap = useRelay()
   const g = snap.groups.find((x) => x.id === gid)
+  const convId = `g:${gid}`
   const [adding, setAdding] = useState(false)
   const [confirmLeave, setConfirmLeave] = useState(false)
+  const [removing, setRemoving] = useState<string | null>(null)
+  const [name, setName] = useState(() => relay.titleOf(convId))
+  const [editPhoto, setEditPhoto] = useState(false)
   if (!g) return null
+  const title = relay.titleOf(convId)
   const me = snap.me!.fingerprint
   const isAdmin = g.admins.includes(me)
-  const nameOf = (fp: string) => (fp === me ? 'Toi' : (snap.contacts.find((c) => c.fingerprint === fp)?.name ?? fp.slice(0, 8)))
+  const nameOf = (fp: string) => (fp === me ? 'Toi' : relay.nameOf(fp))
   const candidates = snap.contacts.filter((c) => !g.members.includes(c.fingerprint))
+  const members = [...g.members].sort((a, b) => (a === me ? -1 : b === me ? 1 : nameOf(a).localeCompare(nameOf(b), 'fr')))
+  const act = (p: Promise<unknown>) => void p.catch((e) => relay.toast(e instanceof Error ? e.message : 'Action impossible.'))
   return (
-    <Sheet title={g.name} onClose={onClose}>
+    <Sheet title={title} onClose={onClose}>
+      <div className="group-hero">
+        {isAdmin ? (
+          <button className="mycard-face" data-autofocus onClick={() => setEditPhoto((v) => !v)} aria-label="Modifier la photo du groupe" aria-expanded={editPhoto}>
+            <Avatar id={convId} name={title} group size={84} />
+            <span className="mycard-edit" aria-hidden="true">
+              <Pencil size={13} />
+            </span>
+          </button>
+        ) : (
+          <Avatar id={convId} name={title} group size={84} />
+        )}
+        <div className="hint mono">
+          {g.members.length} membres · chiffré de bout en bout
+        </div>
+      </div>
+      {isAdmin && editPhoto && (
+        <AvatarPicker
+          has={!!snap.profiles[convId]?.avatar}
+          selfie={false}
+          onPick={async (jpeg) => {
+            setEditPhoto(false)
+            act(relay.setGroupProfile(gid, { avatar: jpeg }))
+          }}
+        />
+      )}
+      {isAdmin && (
+        <form
+          style={{ marginTop: 6 }}
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (name.trim() && name.trim() !== title) act(relay.setGroupProfile(gid, { name: name.trim() }))
+          }}
+        >
+          <div className="field">
+            <label htmlFor="group-rename">Nom du groupe</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input id="group-rename" value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} maxLength={60} />
+              <button className="btn" disabled={!name.trim() || name.trim() === title}>
+                Renommer
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
       <div className="lbl hint" style={{ fontWeight: 600 }}>
         Membres · {g.members.length}
       </div>
-      <ul className="list" style={{ padding: '6px 0' }}>
-        {g.members.map((fp) => (
+      <ul className="list member-list" style={{ padding: '6px 0' }} aria-label="Membres">
+        {members.map((fp) => (
           <li key={fp} className="check-row">
-            <Avatar name={nameOf(fp)} small />
-            <span style={{ flex: 1 }}>
+            <Avatar id={fp === me ? 'me' : fp} name={nameOf(fp)} small online={fp !== me && snap.online.has(snap.contacts.find((c) => c.fingerprint === fp)?.mailbox ?? '')} />
+            <span style={{ flex: 1, minWidth: 0 }}>
               {nameOf(fp)}
               {g.admins.includes(fp) && <span className="mono hint"> · admin</span>}
             </span>
             {isAdmin && fp !== me && (
-              <button className="btn" style={{ height: 34 }} onClick={() => void relay.groupRemove(gid, fp)}>
-                Retirer
-              </button>
+              removing === fp ? (
+                <span className="row-btns" style={{ margin: 0 }}>
+                  <button className="btn" style={{ height: 34 }} onClick={() => setRemoving(null)}>
+                    Garder
+                  </button>
+                  <button
+                    className="btn danger"
+                    style={{ height: 34 }}
+                    onClick={() => {
+                      setRemoving(null)
+                      act(relay.groupRemove(gid, fp))
+                    }}
+                  >
+                    Retirer
+                  </button>
+                </span>
+              ) : (
+                <button className="btn" style={{ height: 34 }} onClick={() => setRemoving(fp)} aria-label={`Retirer ${nameOf(fp)} du groupe`}>
+                  Retirer
+                </button>
+              )
             )}
           </li>
         ))}
       </ul>
-      {adding ? (
-        <div>
-          <div className="lbl hint" style={{ fontWeight: 600, marginTop: 8 }}>
-            Ajouter
-          </div>
-          {candidates.length === 0 && <p className="hint">Tous tes contacts sont déjà là.</p>}
-          {candidates.map((c) => (
-            <div className="check-row" key={c.fingerprint}>
-              <Avatar name={c.name} small />
-              <span style={{ flex: 1 }}>{c.name}</span>
-              <button className="btn primary" style={{ height: 34 }} onClick={() => void relay.groupAdd(gid, c.fingerprint)}>
-                Ajouter
-              </button>
+      {isAdmin &&
+        (adding ? (
+          <div>
+            <div className="lbl hint" style={{ fontWeight: 600, marginTop: 8 }}>
+              Ajouter
             </div>
-          ))}
-        </div>
-      ) : (
-        <button className="btn block" onClick={() => setAdding(true)} disabled={!isAdmin}>
-          Ajouter des membres
-        </button>
-      )}
-      <ConvOptions convId={`g:${gid}`} />
+            {candidates.length === 0 && <p className="hint">Tous tes contacts sont déjà là.</p>}
+            {candidates.map((c) => (
+              <div className="check-row" key={c.fingerprint}>
+                <Avatar id={c.fingerprint} name={c.name} small />
+                <span style={{ flex: 1 }}>{c.name}</span>
+                <button className="btn primary" style={{ height: 34 }} onClick={() => act(relay.groupAdd(gid, c.fingerprint))} aria-label={`Ajouter ${c.name} au groupe`}>
+                  Ajouter
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <button className="btn block" onClick={() => setAdding(true)}>
+            Ajouter des membres
+          </button>
+        ))}
+      <ConvOptions convId={convId} />
       <div style={{ marginTop: 12 }}>
         {confirmLeave ? (
-          <div className="row-btns">
-            <button className="btn" onClick={() => setConfirmLeave(false)}>
-              Rester
-            </button>
-            <button
-              className="btn danger"
-              onClick={() => {
-                void relay.leaveGroup(gid)
-                onClose()
-              }}
-            >
-              Quitter et effacer
-            </button>
+          <div className="stack">
+            <p className="hint">Les autres verront que tu es parti. La conversation sera effacée de cet appareil.</p>
+            <div className="row-btns" style={{ marginTop: 0 }}>
+              <button className="btn" onClick={() => setConfirmLeave(false)}>
+                Rester
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => {
+                  onClose()
+                  void relay.openConversation(null)
+                  act(relay.leaveGroup(gid))
+                }}
+              >
+                Quitter et effacer
+              </button>
+            </div>
           </div>
         ) : (
           <button className="btn block" style={{ color: 'var(--danger)' }} onClick={() => setConfirmLeave(true)}>

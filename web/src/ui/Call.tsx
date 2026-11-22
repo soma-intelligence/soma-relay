@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { relay } from '../state/relay'
 import { formatDuration } from '../media/media'
-import { initials, useCall, useRelay } from './common'
+import { Avatar, useCall, useRelay } from './common'
 import { CameraOff, Chat, Hang, Lock, Mic, MicOff, Phone, Speaker, Video } from './Icons'
 
 /** The call screen (FusionAppel) and the incoming call sheet. */
@@ -10,16 +10,16 @@ export function CallLayer({ onOpenChat }: { onOpenChat: (fp: string) => void }) 
   const snap = useRelay()
   if (call.phase === 'idle' || !call.peer) return null
   const name = snap.contacts.find((c) => c.fingerprint === call.peer)?.name ?? 'Inconnu'
-  if (call.phase === 'incoming') return <Incoming name={name} video={call.video} />
-  return <CallScreen name={name} onOpenChat={() => onOpenChat(call.peer!)} />
+  if (call.phase === 'incoming') return <Incoming peer={call.peer} name={name} video={call.video} />
+  return <CallScreen name={name} face={relay.avatarUrl(call.peer)} onOpenChat={() => onOpenChat(call.peer!)} />
 }
 
-function Incoming({ name, video }: { name: string; video: boolean }) {
+function Incoming({ peer, name, video }: { peer: string; name: string; video: boolean }) {
   const ref = useRef<HTMLButtonElement>(null)
   useEffect(() => ref.current?.focus(), [])
   return (
     <div className="incoming glass" role="alertdialog" aria-label={`Appel ${video ? 'vidéo' : 'audio'} de ${name}`}>
-      <span className="avatar">{initials(name)}</span>
+      <Avatar id={peer} name={name} />
       <span className="who">
         <b>{name}</b>
         <span>{video ? 'APPEL VIDÉO CHIFFRÉ' : 'APPEL CHIFFRÉ'}</span>
@@ -34,7 +34,7 @@ function Incoming({ name, video }: { name: string; video: boolean }) {
   )
 }
 
-function Ring({ label }: { label: string }) {
+function Ring({ label, face }: { label: string; face?: string }) {
   const arc = useRef<SVGCircleElement>(null)
   useEffect(() => {
     let raf = 0
@@ -65,14 +65,23 @@ function Ring({ label }: { label: string }) {
         transform="rotate(-90 110 110)"
       />
       <circle cx="110" cy="110" r="60" fill="#1a1e1b" />
-      <text x="110" y="122" textAnchor="middle" fontFamily="-apple-system, system-ui, sans-serif" fontSize="34" fontWeight="600" fill="#e9ece6">
-        {label.slice(0, 2).toUpperCase()}
-      </text>
+      {face ? (
+        <>
+          <clipPath id="ring-face">
+            <circle cx="110" cy="110" r="60" />
+          </clipPath>
+          <image href={face} x="50" y="50" width="120" height="120" clipPath="url(#ring-face)" preserveAspectRatio="xMidYMid slice" />
+        </>
+      ) : (
+        <text x="110" y="122" textAnchor="middle" fontFamily="-apple-system, system-ui, sans-serif" fontSize="34" fontWeight="600" fill="#e9ece6">
+          {label.slice(0, 2).toUpperCase()}
+        </text>
+      )}
     </svg>
   )
 }
 
-function CallScreen({ name, onOpenChat }: { name: string; onOpenChat: () => void }) {
+function CallScreen({ name, face, onOpenChat }: { name: string; face?: string; onOpenChat: () => void }) {
   const call = useCall()
   const [now, setNow] = useState(Date.now())
   const remoteV = useRef<HTMLVideoElement>(null)
@@ -121,7 +130,7 @@ function CallScreen({ name, onOpenChat }: { name: string; onOpenChat: () => void
         <Lock />
         {pill}
       </div>
-      {!hasRemoteVideo && <Ring label={name} />}
+      {!hasRemoteVideo && <Ring label={name} face={face} />}
       <h1 style={hasRemoteVideo ? { marginTop: 'auto' } : undefined}>{name}</h1>
       <div className="timer" aria-live="polite">
         {status}

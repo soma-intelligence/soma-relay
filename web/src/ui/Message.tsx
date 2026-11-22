@@ -4,6 +4,7 @@ import type { ChatMessage } from '../state/types'
 import { formatDuration, formatSize } from '../media/media'
 import { File, Pause, Phone, Play, Reply, Timer, Video } from './Icons'
 import { RichText } from './RichText'
+import { Avatar } from './common'
 import { LinkCard, LocationBubble, PollBubble } from './Rich'
 
 export type RunPos = 'single' | 'first' | 'mid' | 'last'
@@ -286,6 +287,7 @@ export const MessageItem = memo(function MessageItem({
   quoted,
   senderName,
   senderColor,
+  senderFace,
   isGroup,
   pos,
   showMeta,
@@ -299,6 +301,8 @@ export const MessageItem = memo(function MessageItem({
   quoted?: ChatMessage
   senderName?: string
   senderColor?: string
+  /** Show the sender's face next to the bubble (last of a run, groups). */
+  senderFace?: boolean
   isGroup: boolean
   pos: RunPos
   showMeta: boolean
@@ -447,7 +451,7 @@ export const MessageItem = memo(function MessageItem({
   return (
     <div
       ref={row}
-      className={`msg ${out ? 'out' : 'in'} pos-${pos}${fresh ? ' fresh' : ''}${flash ? ' flash' : ''}`}
+      className={`msg ${out ? 'out' : 'in'} pos-${pos}${fresh ? ' fresh' : ''}${flash ? ' flash' : ''}${isGroup && !out ? ' grp-in' : ''}`}
       onContextMenu={(e) => {
         if ((e.target as HTMLElement).closest('a')) return
         e.preventDefault()
@@ -470,6 +474,7 @@ export const MessageItem = memo(function MessageItem({
         <Reply />
       </div>
       <div className="msg-body" style={dragX ? { transform: `translateX(${dragX}px)`, transition: 'none' } : undefined}>
+        {senderFace && <Avatar id={m.from} name={senderName ?? '?'} size={28} className="msg-face" />}
         {!textLike && fwd}
         {!textLike && quote}
         {body}

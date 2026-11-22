@@ -1,0 +1,792 @@
+/* v1.2: profile and group photos, live list, banner, my card, camera, group flows. */
+
+/* Avatars: the photo fades in over the initials, same box, no layout change. */
+
+.avatar {
+  overflow: visible;
+  isolation: isolate;
+}
+.avatar.has-photo {
+  background: var(--soft);
+  color: transparent;
+}
+.avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.25s var(--ease);
+  z-index: -1;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+.avatar-img.ready {
+  opacity: 1;
+  z-index: 0;
+}
+.avatar .presence {
+  z-index: 1;
+}
+.icon-btn.me-btn {
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s var(--spring);
+}
+.icon-btn.me-btn:active {
+  transform: scale(0.94);
+}
+.icon-btn.me-btn .avatar {
+  box-shadow: none;
+  background: var(--bubble-in);
+}
+
+/* Conversation list: unread rows are bold, the badge pops when the count changes. */
+
+.row.unread .row-title {
+  font-weight: 750;
+}
+.row.unread .row-sub {
+  color: var(--fg);
+  font-weight: 500;
+}
+.row.unread .row-meta {
+  color: var(--fg);
+  font-weight: 600;
+}
+.row .badge {
+  animation: badge-pop 0.36s var(--spring);
+}
+@keyframes badge-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+}
+.row-title mark {
+  background: var(--hl);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+.list > li {
+  will-change: auto;
+}
+
+/* Chat header with the face of the conversation */
+
+.chat-title.with-face {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  text-align: left;
+  padding-left: 2px;
+}
+.chat-title-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.chat-title.with-face .avatar .presence {
+  width: 10px;
+  height: 10px;
+  right: -1px;
+  bottom: -1px;
+}
+
+/* Group bubbles: the sender's face sits next to the last bubble of a run. */
+
+.msg.grp-in {
+  padding-left: 36px;
+}
+.msg-face {
+  position: absolute;
+  left: -36px;
+  bottom: 0;
+  box-shadow: none;
+}
+.msg.in.fresh .msg-face {
+  animation: face-in 0.3s var(--ease) both;
+}
+@keyframes face-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+/* In-conversation search count */
+
+.chat-search .hits {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 52px;
+}
+
+/* In-app banner */
+
+.banner-wrap {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  left: 0;
+  right: 0;
+  z-index: 55;
+  display: flex;
+  justify-content: center;
+  padding: 0 12px;
+  pointer-events: none;
+}
+.banner {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px 8px 8px;
+  border-radius: 24px;
+  box-shadow: 0 14px 40px rgba(17, 20, 24, 0.18);
+  touch-action: none;
+  cursor: pointer;
+  user-select: none;
+  animation: banner-in 0.5s var(--spring) backwards;
+  transition:
+    transform 0.25s var(--ease),
+    opacity 0.25s var(--ease);
+}
+.banner.leaving {
+  transform: translateY(-120%) !important;
+  opacity: 0 !important;
+}
+@keyframes banner-in {
+  from {
+    transform: translateY(-110%);
+    opacity: 0;
+  }
+}
+.banner-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+  border-radius: 18px;
+}
+.banner-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.banner-text b {
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.banner-text span {
+  font-size: 14px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.banner-close {
+  width: 34px;
+  height: 34px;
+  opacity: 0.7;
+}
+.banner-close:hover {
+  opacity: 1;
+}
+@media (prefers-color-scheme: dark) {
+  .banner {
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* My card, full screen */
+
+.mycard {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  overflow-y: auto;
+  background:
+    radial-gradient(120% 60% at 50% 0%, var(--card) 0%, transparent 70%),
+    var(--bg);
+  animation: card-in 0.42s var(--spring) both;
+}
+.mycard.closing {
+  animation: card-out 0.2s var(--ease) both;
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.98);
+  }
+}
+@keyframes card-out {
+  to {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+}
+.mycard-inner {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: max(14px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.mycard-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mycard-top h2 {
+  flex: 1;
+  text-align: center;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+.mycard-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  animation: fade 0.25s var(--ease);
+}
+.mycard-id {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 0 14px;
+}
+.mycard-face {
+  position: relative;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 50%;
+  transition: transform 0.2s var(--spring);
+}
+.mycard-face:active {
+  transform: scale(0.96);
+}
+.mycard-edit {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--strong);
+  color: var(--strong-fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg);
+}
+.mycard-name {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 6px;
+}
+.mycard-photo {
+  margin: 0 0 14px;
+  animation: fade 0.2s var(--ease);
+}
+.mycard-qr {
+  width: min(320px, 100%);
+  margin: 0 auto;
+  border-radius: 28px;
+  box-shadow: 0 18px 50px rgba(17, 20, 24, 0.12);
+}
+.mycard-qr canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 28px;
+}
+.mycard-hint {
+  margin: 14px 8px 0;
+  font-size: 13px;
+}
+.mycard-main-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+.mycard-main-btns .btn {
+  height: 50px;
+  border-radius: 25px;
+}
+.mycard-sub-btns {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.btn.subtle {
+  background: transparent;
+  color: var(--muted);
+  height: 38px;
+  font-size: 14px;
+  padding: 0 12px;
+}
+.btn.subtle:hover:not(:disabled) {
+  color: var(--fg);
+}
+.mycard-paste {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mycard-paste input {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  border-radius: 14px;
+  border: 1px solid var(--sep);
+  background: var(--input);
+  padding: 0 14px;
+  font-size: 16px;
+}
+.mycard-body .scanner {
+  border-radius: 28px;
+}
+
+/* Avatar picker buttons */
+
+.avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.avatar-actions.compact {
+  justify-content: flex-start;
+}
+.avatar-actions.compact .btn {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+.profile-row {
+  align-items: center;
+  gap: 14px;
+}
+.profile-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Camera capture and crop dialogs */
+
+.cam-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  animation: fade 0.2s var(--ease);
+}
+.cam {
+  width: 100%;
+  max-width: 560px;
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--sheet);
+  border-radius: 28px;
+  padding: 12px 16px 18px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.3);
+  animation: pop-dialog 0.38s var(--spring) both;
+}
+.cam.crop {
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.cam.crop .row-btns {
+  width: 100%;
+}
+@keyframes pop-dialog {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(12px);
+  }
+}
+.cam-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+}
+.cam-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+.cam.crop .cam-head h2 {
+  text-align: center;
+}
+.cam-stage {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: #0b0d0c;
+  border-radius: 20px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cam-stage video,
+.cam-still {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cam-stage video.mirror {
+  transform: scaleX(-1);
+}
+.cam-still {
+  animation: fade 0.2s var(--ease);
+}
+.cam-stage .spinner {
+  position: absolute;
+}
+.cam-error {
+  position: absolute;
+  inset: auto 16px 16px;
+  margin: 0;
+  color: #f2f4f1;
+  font-size: 14px;
+  text-align: center;
+}
+.cam-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  animation: cam-flash 0.18s ease-out both;
+  pointer-events: none;
+}
+@keyframes cam-flash {
+  from {
+    opacity: 0.85;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.cam-actions {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.shutter-row {
+  align-items: center;
+}
+.shutter {
+  width: 68px;
+  height: 68px;
+  border-radius: 34px;
+  border: 4px solid var(--fg);
+  background: transparent;
+  padding: 4px;
+  transition: transform 0.15s var(--spring);
+}
+.shutter span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--fg);
+}
+.shutter:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.cam-caption {
+  height: 44px;
+  border-radius: 22px;
+  border: 1px solid var(--sep);
+  background: var(--input);
+  padding: 0 16px;
+  font-size: 16px;
+}
+.crop-view {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  background: #0b0d0c;
+  touch-action: none;
+  cursor: grab;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.crop-view:active {
+  cursor: grabbing;
+}
+.crop-view img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  max-width: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.crop-mask {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55);
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: -1px;
+  pointer-events: none;
+}
+.crop-zoom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 18px;
+}
+.crop-zoom input {
+  flex: 1;
+  accent-color: var(--strong);
+}
+
+/* Composer camera button: hides while there is text to send. */
+
+.cam-btn {
+  transition:
+    width 0.22s var(--ease),
+    opacity 0.18s var(--ease),
+    margin 0.22s var(--ease);
+}
+.cam-btn[data-hidden='true'] {
+  width: 0;
+  opacity: 0;
+  margin-left: -10px;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* New group and group details */
+
+.group-id {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.group-id .avatar,
+.group-hero .avatar {
+  box-shadow: none;
+}
+.picked {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 12px 2px 4px;
+  scrollbar-width: none;
+}
+.picked-chip {
+  position: relative;
+  flex: none;
+  width: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+  animation: chip-in 0.32s var(--spring) both;
+}
+.picked-chip span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picked-chip i {
+  position: absolute;
+  top: -2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--muted);
+  color: var(--bg);
+  font-style: normal;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+@keyframes chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+.pick-list {
+  border: 0;
+  padding: 0;
+  margin: 12px 0 16px;
+}
+.pick-list legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.pick-search {
+  width: 100%;
+  height: 40px;
+  border-radius: 12px;
+  border: 0;
+  background: var(--input);
+  padding: 0 12px;
+  margin-bottom: 6px;
+  font-size: 16px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 6px;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.pick-row:hover {
+  background: var(--soft);
+}
+.pick-row:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.pick-name {
+  flex: 1;
+  min-width: 0;
+}
+.checkmark {
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  border: 1.5px solid var(--dashed);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    transform 0.3s var(--spring);
+}
+.pick-row.on .checkmark {
+  background: var(--strong);
+  border-color: var(--strong);
+  color: var(--strong-fg);
+  transform: scale(1.08);
+}
+.group-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 14px;
+}
+.member-list .check-row {
+  min-height: 56px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner,
+  .mycard,
+  .mycard.closing,
+  .cam,
+  .picked-chip,
+  .row .badge,
+  .msg.in.fresh .msg-face {
+    animation: fade 0.18s linear both !important;
+  }
+  .mycard.closing {
+    animation: none !important;
+  }
+  .checkmark,
+  .cam-btn,
+  .banner {
+    transition-duration: 0.01s !important;
+  }
+}
+
+/* Fixes found on the screenshots */
+
+/* A strong button keeps its colour on hover (the generic hover rule is more specific). */
+.icon-btn.strong:hover:not(:disabled) {
+  background: var(--strong);
+  filter: brightness(1.12);
+}
+.banner.glass {
+  background: var(--glass-solid);
+}
+.pick-row {
+  position: relative;
+}
+.pick-row input[type='checkbox'] {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+.mycard-body .scanner {
+  margin-top: 12px;
+}
+.profile-row {
+  flex-wrap: wrap;
+}
+.profile-row .avatar-actions {
+  width: 100%;
+}
+.settings .set-row > .lbl {
+  min-width: 0;
+}
+.settings .lbl small.mono {
+  overflow-wrap: anywhere;
+}

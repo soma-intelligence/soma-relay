@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { LOCAL_BUS_AVAILABLE, relay } from '../state/relay'
-import { downloadBlob, useRelay } from './common'
+import { Avatar, downloadBlob, useRelay } from './common'
+import { AvatarPicker } from './PhotoEditor'
 import { frameE2eeSupported } from '../calls/callManager'
 
 export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
@@ -20,6 +21,18 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
       <div className="settings">
         <div className="group-title">Identité</div>
         <div className="group">
+          <div className="set-row profile-row">
+            <button className="mycard-face" onClick={onMyCode} aria-label="Ouvrir ma carte">
+              <Avatar id="me" name={me.name} size={64} />
+            </button>
+            <div className="profile-side">
+              <span className="lbl">
+                Photo de profil
+                <small>Envoyée chiffrée à tes contacts et à tes groupes, jamais en clair au nœud.</small>
+              </span>
+            </div>
+            <AvatarPicker has={!!snap.profiles.me?.avatar} onPick={(jpeg) => relay.setMyAvatar(jpeg)} compact />
+          </div>
           <form
             className="set-row"
             onSubmit={(e) => {

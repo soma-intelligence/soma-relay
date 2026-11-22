@@ -1,8 +1,72 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Conversation } from '../state/types'
 import { relay } from '../state/relay'
 import { Avatar, timeLabel, useRelay } from './common'
 import { BellOff, People, Qr, Radio, Search, Timer } from './Icons'
+
+const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches
+
+/**
+ * FLIP reorder: rows that moved slide from their old place with a gentle spring, a new row at
+ * the top grows in. Reduced motion: a short fade instead.
+ */
+function useFlip(order: string[]) {
+  const nodes = useRef(new Map<string, HTMLElement>())
+  const tops = useRef(new Map<string, number>())
+  const first = useRef(true)
+  useLayoutEffect(() => {
+    const next = new Map<string, number>()
+    for (const [id, el] of nodes.current) if (el.isConnected) next.set(id, el.offsetTop)
+    if (!first.current) {
+      for (const [id, top] of next) {
+        const el = nodes.current.get(id)!
+        const was = tops.current.get(id)
+        if (was === undefined) {
+          el.animate(
+            reduced()
+              ? [{ opacity: 0 }, { opacity: 1 }]
+              : [
+                  { opacity: 0, transform: 'translateY(-10px) scale(0.97)' },
+                  { opacity: 1, transform: 'none' },
+                ],
+            { duration: reduced() ? 160 : 380, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+          )
+        } else if (Math.abs(was - top) > 1) {
+          if (reduced()) el.animate([{ opacity: 0.4 }, { opacity: 1 }], { duration: 180 })
+          else
+            el.animate([{ transform: `translateY(${was - top}px)` }, { transform: 'none' }], {
+              duration: 460,
+              easing: springOk() ? SPRING : 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+            })
+        }
+      }
+    }
+    first.current = false
+    tops.current = next
+  }, [order.join('|')])
+  return (id: string) => (el: HTMLElement | null) => {
+    if (el) nodes.current.set(id, el)
+    else nodes.current.delete(id)
+  }
+}
+
+const SPRING =
+  'linear(0, 0.06 2.5%, 0.24 5.5%, 0.5 9.5%, 0.74 14%, 0.9 19%, 1 24%, 1.04 30%, 1.05 36%, 1.035 44%, 1.01 56%, 0.998 70%, 1)'
+let springSupport: boolean | null = null
+const springOk = () => (springSupport ??= typeof CSS !== 'undefined' && CSS.supports('animation-timing-function', SPRING))
+
+/** Text with the first match of `needle` marked. */
+export function Highlight({ text, needle }: { text: string; needle: string }) {
+  const i = needle ? text.toLowerCase().indexOf(needle) : -1
+  if (i < 0) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark>{text.slice(i, i + needle.length)}</mark>
+      {text.slice(i + needle.length)}
+    </>
+  )
+}
 
 export function TransportBadge({ t }: { t?: string }) {
   if (!t) return null
@@ -37,6 +101,7 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
   }, [q, snap.conversations])
   const needle = q.trim().toLowerCase()
   const convs = needle ? snap.conversations.filter((c) => c.title.toLowerCase().includes(needle)) : snap.conversations
+  const flipRef = useFlip(convs.map((c) => c.id))
 
   return (
     <>
@@ -58,13 +123,13 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
             {hits.map((h) => (
               <li key={h.id}>
                 <button
-                  className="row"
+                  className="row hit"
                   onClick={() => {
                     relay.setJump(h.convId, h.id)
                     onOpen(h.convId)
                   }}
                 >
-                  <Avatar name={relay.titleOf(h.convId)} small />
+                  <Avatar id={h.convId} name={relay.titleOf(h.convId)} group={h.convId.startsWith('g:')} small />
                   <span className="row-main">
                     <span className="row-line">
                       <span className="row-title">{relay.titleOf(h.convId)}</span>
@@ -97,23 +162,19 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
       ) : (
         <ul className="list" aria-label="Discussions">
           {convs.map((c) => (
-            <li key={c.id}>
+            <li key={c.id} ref={flipRef(c.id)}>
               <button
-                className="row"
+                className={`row${c.unread > 0 ? ' unread' : ''}`}
                 aria-current={snap.activeConv === c.id}
                 onClick={() => onOpen(c.id)}
                 aria-label={`${c.title}${c.unread ? `, ${c.unread} non lu${c.unread > 1 ? 's' : ''}` : ''}`}
               >
-                {c.kind === 'group' ? (
-                  <span className="avatar" aria-hidden="true">
-                    <People />
-                  </span>
-                ) : (
-                  <Avatar name={c.title} online={onlineOf(c)} />
-                )}
+                <Avatar id={c.id} name={c.title} group={c.kind === 'group'} online={onlineOf(c)} />
                 <span className="row-main">
                   <span className="row-line">
-                    <span className="row-title">{c.title}</span>
+                    <span className="row-title">
+                      <Highlight text={c.title} needle={needle.length >= 2 ? needle : ''} />
+                    </span>
                     {c.expireS ? <Timer size={13} aria-label="Messages éphémères" className="row-ico" /> : null}
                     {c.mutedUntil && c.mutedUntil > now ? <BellOff size={13} aria-label="En sourdine" className="row-ico" /> : null}
                     <span className="row-meta">{timeLabel(c.lastTs)}</span>
@@ -129,7 +190,11 @@ export function ConversationList({ onOpen, onNew }: { onOpen: (id: string) => vo
                       <span className="row-sub">{c.preview}</span>
                     )}
                     <TransportBadge t={c.transport} />
-                    {c.unread > 0 && <span className="badge">{c.unread}</span>}
+                    {c.unread > 0 && (
+                      <span className="badge" key={c.unread}>
+                        {c.unread}
+                      </span>
+                    )}
                   </span>
                 </span>
               </button>
@@ -232,7 +297,7 @@ export function ContactList({
           </li>
           <li>
             <button className="row" onClick={onMyCode}>
-              <Avatar name={snap.me?.name ?? '?'} />
+              <Avatar id="me" name={snap.me?.name ?? '?'} />
               <span className="row-main">
                 <span className="row-title">Mon code</span>
                 <span className="row-sub">À montrer pour qu’on t’ajoute</span>
@@ -245,11 +310,9 @@ export function ContactList({
           {groups.map((g) => (
             <li key={g.id}>
               <button className="row" onClick={() => onOpen(`g:${g.id}`)}>
-                <span className="avatar" aria-hidden="true">
-                  <People />
-                </span>
+                <Avatar id={`g:${g.id}`} name={relay.titleOf(`g:${g.id}`)} group />
                 <span className="row-main">
-                  <span className="row-title">{g.name}</span>
+                  <span className="row-title">{relay.titleOf(`g:${g.id}`)}</span>
                   <span className="row-sub">{g.members.length} membres</span>
                 </span>
               </button>
@@ -266,7 +329,7 @@ export function ContactList({
             {list.map((c) => (
               <li key={c.fingerprint}>
                 <button className="row" onClick={() => onOpen(c.fingerprint)}>
-                  <Avatar name={c.name} online={snap.online.has(c.mailbox)} />
+                  <Avatar id={c.fingerprint} name={c.name} online={snap.online.has(c.mailbox)} />
                   <span className="row-main">
                     <span className="row-title">{c.name}</span>
                     <span className="row-sub mono" style={{ fontSize: 11 }}>

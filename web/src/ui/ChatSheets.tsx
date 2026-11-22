@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { expireLabel, relay } from '../state/relay'
 import type { ChatMessage } from '../state/types'
 import { Avatar, Sheet, useRelay } from './common'
-import { Close, People, Pin, Plus } from './Icons'
+import { Close, Pin, Plus } from './Icons'
 import { StaticMap } from './Rich'
 import { statusWord } from './Message'
 
@@ -176,13 +176,7 @@ export function ForwardSheet({ m, onClose }: { m: ChatMessage; onClose: () => vo
                 relay.toast(`Transféré à ${t.title}.`)
               }}
             >
-              {t.group ? (
-                <span className="avatar" aria-hidden="true">
-                  <People />
-                </span>
-              ) : (
-                <Avatar name={t.title} />
-              )}
+              <Avatar id={t.id} name={t.title} group={t.group} />
               <span className="row-main">
                 <span className="row-title">{t.title}</span>
               </span>

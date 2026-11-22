@@ -5,7 +5,8 @@ import type { ChatMessage } from '../state/types'
 import type { LinkPreview } from '../core/engine'
 import { firstUrl } from '../state/sanitize'
 import { prepareDocument, prepareImage, prepareVideo, VoiceRecorder, formatDuration } from '../media/media'
-import { useRelay } from './common'
+import { Avatar, useRelay } from './common'
+import { CameraCapture } from './Camera'
 import { MessageItem, type MessageHandlers, type RunPos } from './Message'
 import { MessageMenu, type MenuAction } from './MessageMenu'
 import { ForwardSheet, InfoSheet, LocationSheet, PollSheet } from './ChatSheets'
@@ -109,7 +110,7 @@ export function ChatView({
   const contact = isGroup ? undefined : snap.contacts.find((c) => c.fingerprint === convId)
   const group = isGroup ? snap.groups.find((g) => g.id === convId.slice(2)) : undefined
   const conv = snap.conversations.find((c) => c.id === convId)
-  const title = isGroup ? (group?.name ?? 'Groupe') : (contact?.name ?? 'Inconnu')
+  const title = relay.titleOf(convId)
   const messages = useMemo(() => snap.messages[convId] ?? [], [snap.messages, convId])
   const online = !!contact && snap.online.has(contact.mailbox)
   const p2p = !isGroup && snap.p2pOpen.has(convId)
@@ -211,9 +212,8 @@ export function ChatView({
   }, [typingNow, snap.typing])
 
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages])
-  const contactsRef = useRef(snap.contacts)
-  contactsRef.current = snap.contacts
-  const nameOf = useCallback((fp: string) => contactsRef.current.find((c) => c.fingerprint === fp)?.name ?? fpShort(fp), [])
+  // Names come from contacts, then from received profiles (members who are not contacts).
+  const nameOf = useCallback((fp: string) => relay.nameOf(fp), [])
   const me = snap.me?.fingerprint
   const members = useMemo(
     () => (group ? group.members.filter((fp) => fp !== me).map((fp) => ({ fp, name: nameOf(fp) })) : []),
@@ -229,12 +229,18 @@ export function ChatView({
       .filter((m) => !m.deleted && (m.kind === 'text' ? m.text : m.kind === 'poll' ? m.poll?.question : m.kind === 'file' ? m.attachment?.name : '')?.toLowerCase().includes(q))
       .map((m) => m.id)
   }, [messages, search?.q])
-  useEffect(() => {
+  // idx -1 = the newest hit. Up and Enter go to older hits, down and Shift+Enter to newer ones.
+  const cur = search && hits.length ? (search.idx < 0 ? hits.length - 1 : Math.min(search.idx, hits.length - 1)) : -1
+  const step = (d: number) => {
     if (!search || !hits.length) return
-    const id = hits[Math.min(search.idx, hits.length - 1)]
+    setSearch({ ...search, idx: (cur + d + hits.length) % hits.length })
+  }
+  useEffect(() => {
+    if (cur < 0) return
+    const id = hits[cur]
     if (id) scrollToMessage(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search?.idx, hits.length])
+  }, [cur, hits.length])
 
   const handlers = useMemo<MessageHandlers>(
     () => ({
@@ -354,6 +360,7 @@ export function ChatView({
         m={m}
         quoted={m.replyTo ? byId.get(m.replyTo) : undefined}
         senderName={isGroup && m.from !== 'me' ? nameOf(m.from) : undefined}
+        senderFace={isGroup && m.from !== 'me' && (pos === 'last' || pos === 'single')}
         senderColor={isGroup && m.from !== 'me' ? senderColor(m.from) : undefined}
         isGroup={isGroup}
         pos={pos}
@@ -379,7 +386,9 @@ export function ChatView({
           ) : (
             <span style={{ width: 44 }} />
           )}
-          <button className="chat-title" onClick={onInfo} aria-label={`Infos sur ${title}`}>
+          <button className="chat-title with-face" onClick={onInfo} aria-label={`Infos sur ${title}`}>
+            <Avatar id={convId} name={title} group={isGroup} size={36} online={online} />
+            <span className="chat-title-text">
             <span className="name">{title}</span>
             <span className="fp">
               {isGroup ? `${group?.members.length ?? 0} membres` : `fp ${fpShort(convId)} · ${contact?.verified ? 'vérifiée' : 'non vérifiée'}`}
@@ -390,8 +399,9 @@ export function ChatView({
                 </span>
               ) : null}
             </span>
+            </span>
           </button>
-          <button className="icon-btn" aria-label="Chercher dans la discussion" aria-pressed={!!search} onClick={() => setSearch((s) => (s ? null : { q: '', idx: 0 }))}>
+          <button className="icon-btn" aria-label="Chercher dans la discussion" aria-pressed={!!search} onClick={() => setSearch((s) => (s ? null : { q: '', idx: -1 }))}>
             <Search />
           </button>
           {!isGroup && (
@@ -411,7 +421,7 @@ export function ChatView({
             role="search"
             onSubmit={(e) => {
               e.preventDefault()
-              if (hits.length) setSearch({ ...search, idx: (search.idx + 1) % hits.length })
+              step(-1)
             }}
           >
             <Search size={16} />
@@ -424,21 +434,28 @@ export function ChatView({
               autoFocus
               placeholder="Chercher"
               value={search.q}
-              onChange={(e) => setSearch({ q: e.target.value, idx: 0 })}
+              onChange={(e) => setSearch({ q: e.target.value, idx: -1 })}
+              aria-keyshortcuts="Enter Shift+Enter ArrowUp ArrowDown Escape"
               onKeyDown={(e) => {
                 if (e.key === 'Escape') {
                   e.preventDefault()
                   setSearch(null)
+                } else if (e.key === 'Enter' && e.shiftKey) {
+                  e.preventDefault()
+                  step(1)
+                } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  step(e.key === 'ArrowUp' ? -1 : 1)
                 }
               }}
             />
-            <span className="mono hits" aria-live="polite">
-              {search.q.trim().length >= 2 ? (hits.length ? `${Math.min(search.idx, hits.length - 1) + 1}/${hits.length}` : '0') : ''}
+            <span className="hits" aria-live="polite" data-testid="search-count">
+              {search.q.trim().length >= 2 ? (hits.length ? `${hits.length - cur} sur ${hits.length}` : 'Aucun') : ''}
             </span>
-            <button type="button" className="icon-btn plain" aria-label="Résultat précédent" disabled={!hits.length} onClick={() => setSearch({ ...search, idx: (search.idx + hits.length - 1) % hits.length })}>
+            <button type="button" className="icon-btn plain" aria-label="Résultat plus ancien" disabled={hits.length < 2} onClick={() => step(-1)}>
               <ChevronUp />
             </button>
-            <button type="button" className="icon-btn plain" aria-label="Résultat suivant" disabled={!hits.length} onClick={() => setSearch({ ...search, idx: (search.idx + 1) % hits.length })}>
+            <button type="button" className="icon-btn plain" aria-label="Résultat plus récent" disabled={hits.length < 2} onClick={() => step(1)}>
               <ChevronDown />
             </button>
             <button type="button" className="icon-btn plain" aria-label="Fermer la recherche" onClick={() => setSearch(null)}>
@@ -572,6 +589,25 @@ function Composer({
   const cameraInput = useRef<HTMLInputElement>(null)
   const savedDraft = useRef('')
   const coarse = useMemo(() => matchMedia('(pointer: coarse)').matches, [])
+  const [camera, setCamera] = useState(false)
+
+  /** Phones: the native camera. Desktop: live preview in a capture sheet. */
+  const openCamera = () => {
+    setMenu(false)
+    if (coarse || typeof navigator.mediaDevices?.getUserMedia !== 'function') cameraInput.current?.click()
+    else setCamera(true)
+  }
+
+  const sendShot = async (blob: Blob, caption: string) => {
+    setCamera(false)
+    try {
+      const name = `photo-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.jpg`
+      await relay.sendMedia(convId, 'image', await prepareImage(new globalThis.File([blob], name, { type: 'image/jpeg' })), name)
+      if (caption) await relay.sendText(convId, caption)
+    } catch (e) {
+      relay.toast(e instanceof Error ? e.message : 'Envoi impossible.')
+    }
+  }
 
   useEffect(() => {
     setText(relay.getSnapshot().conversations.find((c) => c.id === convId)?.draft ?? '')
@@ -844,14 +880,12 @@ function Composer({
             </span>
             Photo ou vidéo
           </button>
-          {coarse && (
-            <button role="menuitem" onClick={() => cameraInput.current?.click()}>
-              <span className="am-ico am-camera">
-                <Camera />
-              </span>
-              Appareil photo
-            </button>
-          )}
+          <button role="menuitem" onClick={openCamera}>
+            <span className="am-ico am-camera">
+              <Camera />
+            </span>
+            Appareil photo
+          </button>
           <button role="menuitem" onClick={() => fileInput.current?.click()}>
             <span className="am-ico am-doc">
               <File />
@@ -959,6 +993,17 @@ function Composer({
               }}
             />
             <button
+              type="button"
+              className="icon-btn plain cam-btn"
+              data-hidden={sendMode}
+              tabIndex={sendMode ? -1 : 0}
+              aria-hidden={sendMode}
+              aria-label="Prendre une photo"
+              onClick={openCamera}
+            >
+              <Camera />
+            </button>
+            <button
               type={sendMode ? 'submit' : 'button'}
               className="icon-btn strong morph"
               data-mode={sendMode ? 'send' : 'mic'}
@@ -975,6 +1020,7 @@ function Composer({
           </>
         )}
       </form>
+      {camera && <CameraCapture withCaption onClose={() => setCamera(false)} onCapture={(blob, caption) => void sendShot(blob, caption)} />}
       <input ref={photoInput} type="file" accept="image/*,video/*" multiple hidden onChange={(e) => void onFiles(e.target.files, 'media').then(() => (e.target.value = ''))} />
       <input ref={cameraInput} type="file" accept="image/*" capture="environment" hidden onChange={(e) => void onFiles(e.target.files, 'media').then(() => (e.target.value = ''))} />
       <input ref={fileInput} type="file" multiple hidden onChange={(e) => void onFiles(e.target.files, 'file').then(() => (e.target.value = ''))} />

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { relay, type Snapshot } from '../state/relay'
-import { Close } from './Icons'
+import { Close, People } from './Icons'
 
 export function useRelay(): Snapshot {
   return useSyncExternalStore(relay.subscribe, relay.getSnapshot)
@@ -17,13 +17,45 @@ export function initials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase()
 }
 
-export function Avatar({ name, online, small }: { name: string; online?: boolean; small?: boolean }) {
+/**
+ * A face: the photo of the profile `id` ('me', a fingerprint or 'g:' + group id) when there is
+ * one, else the initials (or the group glyph). The photo fades in over the initials, same box,
+ * so nothing moves when it loads.
+ */
+export function Avatar({
+  name,
+  id,
+  online,
+  small,
+  size,
+  group,
+  className,
+}: {
+  name: string
+  id?: string
+  online?: boolean
+  small?: boolean
+  /** Pixel size, overrides the 48 px default (and `small`). */
+  size?: number
+  group?: boolean
+  className?: string
+}) {
+  const snap = useRelay()
+  const key = id && id === snap.me?.fingerprint ? 'me' : id
+  const b64 = key ? snap.profiles[key]?.avatar : undefined
+  const style = size ? { width: size, height: size, borderRadius: size / 2, fontSize: Math.round(size * 0.36) } : undefined
   return (
-    <span className={`avatar${small ? ' sm' : ''}`} aria-hidden="true">
-      {initials(name)}
+    <span className={`avatar${small ? ' sm' : ''}${b64 ? ' has-photo' : ''}${className ? ' ' + className : ''}`} style={style} aria-hidden="true">
+      {group && !b64 ? <People size={size ? Math.round(size * 0.45) : small ? 17 : 20} /> : initials(name)}
+      {b64 && <AvatarImg key={b64.length + b64.slice(-12)} src={`data:image/jpeg;base64,${b64}`} />}
       {online && <span className="presence" />}
     </span>
   )
+}
+
+function AvatarImg({ src }: { src: string }) {
+  const [ready, setReady] = useState(false)
+  return <img className={`avatar-img${ready ? ' ready' : ''}`} src={src} alt="" draggable={false} onLoad={() => setReady(true)} />
 }
 
 /** Modal sheet: focus trapped loosely (first field focused), Escape closes, scrim click closes. */

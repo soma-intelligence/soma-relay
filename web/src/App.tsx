@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import { relay } from './state/relay'
-import { useCall, useRelay } from './ui/common'
+import { Avatar, useCall, useRelay } from './ui/common'
 import { Onboarding, Welcome } from './ui/Onboarding'
 import { ContactList, ConversationList, useUnreadTotal } from './ui/Lists'
 import { ChatView } from './ui/Chat'
-import { AddContactSheet, ContactSheet, GroupSheet, MyCodeSheet, NewGroupSheet } from './ui/Sheets'
+import { AddContactSheet, ContactSheet, GroupSheet, NewGroupSheet } from './ui/Sheets'
+import { MyCard } from './ui/MyCard'
+import { MessageBanner } from './ui/Banner'
 import { SettingsView } from './ui/Settings'
 import { CallLayer } from './ui/Call'
-import { Chat as ChatIcon, Gear, People, Phone, Plus, Qr } from './ui/Icons'
+import { Chat as ChatIcon, Gear, People, Phone, Plus } from './ui/Icons'
 
 type Tab = 'chats' | 'contacts' | 'settings'
 type SheetState =
@@ -97,9 +99,14 @@ export function App() {
                 {snap.engineKind === 'mock' ? ' · TEST' : ''}
               </div>
             </div>
-            <button className="icon-btn" aria-label="Mon code" onClick={() => setSheet({ kind: 'mycode' })}>
-              <Qr />
+            <button className="icon-btn me-btn" aria-label="Mon code" title="Ma carte" onClick={() => setSheet({ kind: 'mycode' })}>
+              <Avatar id="me" name={snap.me?.name ?? '?'} size={36} />
             </button>
+            {tab === 'chats' && (
+              <button className="icon-btn" aria-label="Nouveau groupe" title="Nouveau groupe" onClick={() => setSheet({ kind: 'newgroup' })}>
+                <People />
+              </button>
+            )}
             <button className="icon-btn strong" aria-label="Ajouter un contact" onClick={() => setSheet({ kind: 'add' })}>
               <Plus />
             </button>
@@ -166,7 +173,16 @@ export function App() {
           }}
         />
       )}
-      {sheet?.kind === 'mycode' && <MyCodeSheet onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'mycode' && (
+        <MyCard
+          onClose={() => setSheet(null)}
+          onAdded={(fp) => {
+            setSheet(null)
+            setTab('chats')
+            open(fp)
+          }}
+        />
+      )}
       {sheet?.kind === 'contact' && <ContactSheet fp={sheet.fp} onClose={() => setSheet(null)} />}
       {sheet?.kind === 'group' && <GroupSheet gid={sheet.gid} onClose={() => setSheet(null)} />}
       {sheet?.kind === 'newgroup' && (
@@ -199,6 +215,13 @@ export function App() {
           </span>
         </button>
       )}
+      <MessageBanner
+        onOpen={(convId, msgId) => {
+          relay.setJump(convId, msgId)
+          setTab('chats')
+          open(convId)
+        }}
+      />
       {snap.toast && (
         <div className="toast glass" role="status" key={snap.toast.id}>
           {snap.toast.text}
