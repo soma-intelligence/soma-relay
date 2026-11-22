@@ -35,6 +35,10 @@ final class VaultSync {
     enum SetupError: Error, Equatable {
         /// No identity yet, or the test core (no vault).
         case noIdentity
+        /// The PRF output could not become a vault key (wrong length).
+        case badPRF
+        /// The vault key could not be written to the Keychain (OSStatus).
+        case keychain(Int32)
     }
 
     static let keychainService = "me.somalabs.relay.vault"
@@ -43,6 +47,9 @@ final class VaultSync {
     static let savedAtKey = "vaultSavedAt"
     static let lockOnlyKey = "vaultLockOnly"
     static let userHandleKey = "passkeyUserHandle"
+    /// Non-secret "backup on" flag: the vault key is readable only after the first unlock since
+    /// boot, so whether a backup exists must not depend on reading it.
+    static let enabledKey = "vaultEnabled"
     static let debounce: Duration = .seconds(10)
 
     private(set) var status: VaultStatus = .off
@@ -53,19 +60,30 @@ final class VaultSync {
     @ObservationIgnored weak var model: AppModel?
     @ObservationIgnored private let passkeys: any PasskeyProviding
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private var hasKey: Bool
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
-    @ObservationIgnored private var uploading = false
-    @ObservationIgnored private var uploadAgain = false
+    /// The upload in flight; every `flush` caller awaits it rather than returning early.
+    @ObservationIgnored private var uploadTask: Task<Bool, Never>?
+    /// Generation carried by the upload in flight.
+    @ObservationIgnored private var inFlightGeneration = 0
     /// Bumped by every `markDirty`, so an upload only clears the flag for the state it carried.
     @ObservationIgnored private var generation = 0
+    /// Bumped by `reset()`: an upload that finishes after a wipe writes nothing.
+    @ObservationIgnored private var epoch = 0
     @ObservationIgnored private let log = Logger(subsystem: "me.somalabs.relay", category: "vault")
 
     init(passkeys: any PasskeyProviding = PasskeyService.current, defaults: UserDefaults = .standard) {
         self.passkeys = passkeys
         self.defaults = defaults
-        hasKey = Self.storedKey() != nil
+        if !defaults.bool(forKey: Self.enabledKey), case .found = Self.readKey() {
+            defaults.set(true, forKey: Self.enabledKey)
+        }
         status = initialStatus()
+    }
+
+    /// A backup is set up (vault key stored). Does not read the Keychain.
+    private var hasKey: Bool {
+        get { defaults.bool(forKey: Self.enabledKey) }
+        set { defaults.set(newValue, forKey: Self.enabledKey) }
     }
 
     private var dirty: Bool {
@@ -89,7 +107,9 @@ final class VaultSync {
 
     /// Creates the passkey and the first backup. Passkey failures (`PasskeyFailure`) are thrown
     /// as they are; an upload the node cannot take yet leaves the status at `.pending`.
-    func setUp(userName: String) async throws -> SetupResult {
+    /// With `enableLock`, the lock goes on too: through the setup's own PRF assertion when there
+    /// is one (no further prompt), else through device authentication.
+    func setUp(userName: String, enableLock: Bool = false) async throws -> SetupResult {
         guard let model, model.vaultCanSeal else { throw SetupError.noIdentity }
         let lock = model.lock
         guard !busy else { throw PasskeyFailure.cancelled }
@@ -99,13 +119,9 @@ final class VaultSync {
         let registration = try await passkeys.register(userName: userName, userHandle: userHandle())
         let assertion = try await passkeys.assert(credentialID: registration.credentialID)
         lock.storeCredential(id: assertion.credentialID)
-        if let prfFirst = assertion.prfFirst {
-            lock.storeCheck(prfFirst: prfFirst)
-        }
+        let checkStored = assertion.prfFirst.map { lock.storeCheck(prfFirst: $0) } ?? false
         // `prfSupported` from the registration is not relied on: the assertion outputs decide.
-        guard let prfSecond = assertion.prfSecond, let key = try? vaultKey(prfSecond: prfSecond),
-              Self.storeKey(key)
-        else {
+        guard let prfSecond = assertion.prfSecond else {
             // No PRF: the passkey locks Relay, nothing to encrypt a backup with.
             Self.deleteKey()
             hasKey = false
@@ -113,7 +129,17 @@ final class VaultSync {
             defaults.removeObject(forKey: Self.savedAtKey)
             defaults.set(true, forKey: Self.lockOnlyKey)
             status = .lockOnly
+            if enableLock { await turnOnLock(lock, prfFirst: checkStored ? assertion.prfFirst : nil, model: model) }
             return .lockOnly
+        }
+        guard let key = try? vaultKey(prfSecond: prfSecond) else { throw SetupError.badPRF }
+        let written = Self.storeKey(key)
+        guard written == errSecSuccess else {
+            // `storeKey` removed any older key first: no backup is on any more.
+            hasKey = false
+            dirty = false
+            status = .off
+            throw SetupError.keychain(written)
         }
         hasKey = true
         defaults.removeObject(forKey: Self.lockOnlyKey)
@@ -123,8 +149,16 @@ final class VaultSync {
         #endif
         markDirty(debounced: false)
         status = .pending
+        if enableLock { await turnOnLock(lock, prfFirst: checkStored ? assertion.prfFirst : nil, model: model) }
         await flush()
         return .backedUp
+    }
+
+    /// The setup's verified assertion counts as the unlock when it gave the matching `prfFirst`.
+    /// A passkey without PRF proves nothing to the lock: device authentication then.
+    private func turnOnLock(_ lock: LockController, prfFirst: Data?, model: AppModel) async {
+        let on = if let prfFirst { lock.enable(afterVerifiedAssertion: prfFirst) } else { await lock.enable() }
+        if !on { model.banner = "Verrouillage non activé : le déverrouillage a échoué." }
     }
 
     /// 16 random bytes, made once and kept until a wipe.
@@ -183,27 +217,56 @@ final class VaultSync {
         }
     }
 
-    /// Seals the engine state and puts it on the node, if an upload is owed.
+    /// Seals the engine state and puts it on the node, if an upload is owed. Returns once the
+    /// state current at the call is on the node, or an upload attempt for it has ended. A caller
+    /// that finds an upload in flight waits for it, then uploads again if a newer state is owed.
     func flush() async {
-        guard hasKey, dirty, let model else { return }
-        if uploading {
-            uploadAgain = true
-            return
+        while true {
+            if let running = uploadTask {
+                let carried = inFlightGeneration
+                _ = await running.value
+                // That upload carried this caller's state unless a save came after it started.
+                guard dirty, generation != carried else { return }
+                continue
+            }
+            guard hasKey, dirty, let model else { return }
+            inFlightGeneration = generation
+            let task = Task { [weak self] () -> Bool in
+                guard let self else { return false }
+                let ok = await self.uploadOnce(model)
+                self.uploadTask = nil
+                return ok
+            }
+            uploadTask = task
+            // Stop on a failed attempt (the next trigger retries); go again for a newer state.
+            guard await task.value, dirty else { return }
         }
-        uploading = true
-        defer { uploading = false }
-        repeat {
-            uploadAgain = false
-            await uploadOnce(model)
-        } while uploadAgain && dirty
     }
 
-    private func uploadOnce(_ model: AppModel) async {
+    /// One attempt. True when the node took the blob.
+    private func uploadOnce(_ model: AppModel) async -> Bool {
         debounceTask?.cancel()
-        guard let key = Self.storedKey(), let credential = model.lock.credentialID,
-              let snapshot = model.vaultSnapshot()
-        else { return }
+        let key: Data
+        switch Self.readKey() {
+        case .found(let data): key = data
+        case .locked:
+            // Before the first unlock since boot: keep it owed.
+            status = .pending
+            return false
+        case .missing:
+            status = .failed("Clé de sauvegarde introuvable. Recrée ton passkey.")
+            return false
+        }
+        guard let credential = model.lock.credentialID else {
+            status = .failed("Passkey introuvable. Recrée ton passkey.")
+            return false
+        }
+        guard let snapshot = model.vaultSnapshot() else {
+            status = .failed("Aucune identité à sauvegarder.")
+            return false
+        }
         let carried = generation
+        let started = epoch
         let id = vaultId(credentialId: credential)
         let blob: Data
         do {
@@ -213,19 +276,28 @@ final class VaultSync {
             status = .failed(String(reflecting: error).contains("TooLarge")
                 ? "Sauvegarde trop lourde pour le nœud."
                 : "Sauvegarde impossible à chiffrer.")
-            return
+            return false
         }
         guard let signature = snapshot.sign(id, blob) else {
             status = .failed("Sauvegarde impossible à signer.")
-            return
+            return false
         }
         do {
             try await model.node.putVault(id: id, blob: blob, mailbox: snapshot.mailbox, signature: signature)
-            if generation == carried { dirty = false }
+            // Wiped while the PUT ran: nothing of this backup may come back.
+            guard epoch == started else { return false }
             let now = Date()
             defaults.set(now.timeIntervalSince1970, forKey: Self.savedAtKey)
-            status = .saved(now)
+            if generation == carried {
+                dirty = false
+                status = .saved(now)
+            } else {
+                // A newer state is owed already.
+                status = .pending
+            }
+            return true
         } catch {
+            guard epoch == started else { return false }
             switch error {
             case .network, .unavailable, .refused(code: "unknown_mailbox"), .refused(code: "rate_limited"):
                 // Kept for the next node connection (the WebSocket auth binds the mailbox).
@@ -233,6 +305,7 @@ final class VaultSync {
             case .refused(let code):
                 status = .failed(Self.message(refused: code))
             }
+            return false
         }
     }
 
@@ -242,9 +315,9 @@ final class VaultSync {
     func reset() {
         debounceTask?.cancel()
         debounceTask = nil
+        epoch += 1
         Self.deleteKey()
-        hasKey = false
-        for key in [Self.dirtyKey, Self.savedAtKey, Self.lockOnlyKey, Self.userHandleKey] {
+        for key in [Self.enabledKey, Self.dirtyKey, Self.savedAtKey, Self.lockOnlyKey, Self.userHandleKey] {
             defaults.removeObject(forKey: key)
         }
         status = .off
@@ -256,7 +329,7 @@ final class VaultSync {
     var statusText: String {
         switch status {
         case .off: ""
-        case .lockOnly: "Votre gestionnaire ne prend pas en charge la sauvegarde"
+        case .lockOnly: "Ton gestionnaire ne prend pas en charge la sauvegarde"
         case .saved(let date): "Sauvegardé à " + Self.timeFormatter.string(from: date)
         case .pending: "En attente du réseau"
         case .failed(let message): message
@@ -285,13 +358,18 @@ final class VaultSync {
         case PasskeyFailure.cancelled: "Création du passkey annulée."
         case PasskeyFailure.noCredential: "Aucun passkey n'a été créé."
         case PasskeyFailure.notAvailable: "Les passkeys ne sont pas disponibles sur cet appareil."
+        case SetupError.keychain(let code): "Impossible d'enregistrer la clé de sauvegarde (\(code))."
+        case SetupError.badPRF: "Ton gestionnaire a renvoyé une clé illisible."
         default: "Passkey impossible à créer pour le moment."
         }
     }
 
     // MARK: Keychain
 
-    private static func storedKey() -> Data? {
+    private enum KeyRead { case found(Data), locked, missing }
+
+    /// `.locked`: the item exists but cannot be read yet (before the first unlock since boot).
+    private static func readKey() -> KeyRead {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -300,11 +378,14 @@ final class VaultSync {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        return item as? Data
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess: return (item as? Data).map(KeyRead.found) ?? .missing
+        case errSecInteractionNotAllowed: return .locked
+        default: return .missing
+        }
     }
 
-    private static func storeKey(_ key: Data) -> Bool {
+    private static func storeKey(_ key: Data) -> OSStatus {
         deleteKey()
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -313,7 +394,7 @@ final class VaultSync {
             kSecValueData as String: key,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        return SecItemAdd(add as CFDictionary, nil)
     }
 
     private static func deleteKey() {

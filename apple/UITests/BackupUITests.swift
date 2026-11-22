@@ -54,11 +54,30 @@ final class BackupUITests: XCTestCase {
         XCTAssertEqual(blob.map { String(decoding: $0.prefix(4), as: UTF8.self) }, "RVB1")
     }
 
+    /// Onboarding asks for two system prompts only: create, then one assertion. Mode `once`
+    /// refuses any later assertion and device auth fails, so the lock can only come on through
+    /// the setup's own assertion.
+    func testOnboardingEnablesLockWithoutAnotherPrompt() throws {
+        // A leftover identity may be locked and spend the one assertion at launch: wipe it in a
+        // first launch, then start a new process at onboarding with the lock off at launch
+        // (the wipe's UserDefaults write may not reach disk before `terminate()`).
+        launchAtOnboarding(passkey: "ok")
+        app.terminate()
+        launchAtOnboarding(passkey: "once", deviceAuth: "fail", extra: ["-lockEnabled", "NO"])
+        try control("start")
+        onboard(name: "Dora", protect: true)
+        let lockSwitch = app.switches["Verrouiller Relay"]
+        for _ in 0..<6 where !lockSwitch.isHittable { app.swipeUp() }
+        XCTAssertTrue(lockSwitch.waitForExistence(timeout: 10))
+        XCTAssertEqual(lockSwitch.value as? String, "1", "the lock should be on after the passkey step")
+        XCTAssertTrue(waitForStatus(containing: "Sauvegardé", timeout: 40), "status: \(statusLabel)")
+    }
+
     func testNoPrfMeansLockOnly() throws {
         launchAtOnboarding(passkey: "noprf")
         try control("start")
         onboard(name: "Bruno", protect: true)
-        XCTAssertTrue(waitForStatus(containing: "Votre gestionnaire ne prend pas en charge la sauvegarde", timeout: 15), "status: \(statusLabel)")
+        XCTAssertTrue(waitForStatus(containing: "Ton gestionnaire ne prend pas en charge la sauvegarde", timeout: 15), "status: \(statusLabel)")
         XCTAssertNil(try fetchVault(), "no vault without PRF")
     }
 
@@ -80,10 +99,10 @@ final class BackupUITests: XCTestCase {
 
     // MARK: Steps
 
-    private func launchAtOnboarding(passkey: String) {
+    private func launchAtOnboarding(passkey: String, deviceAuth: String = "ok", extra: [String] = []) {
         app.launchArguments = [
-            "-uitest-passkey", passkey, "-uitest-deviceauth", "ok", "-nodeURL", nodeURL, "-lockDelay", "-1",
-        ]
+            "-uitest-passkey", passkey, "-uitest-deviceauth", deviceAuth, "-nodeURL", nodeURL, "-lockDelay", "-1",
+        ] + extra
         app.launch()
         let start = app.buttons["Commencer"]
         if !start.waitForExistence(timeout: 6) {

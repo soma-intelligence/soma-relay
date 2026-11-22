@@ -170,6 +170,18 @@ final class LockController {
         return true
     }
 
+    /// Turns the lock on right after passkey setup, without another ceremony: the setup's own
+    /// assertion (user verification required) gave `prfFirst`, and it must match the check value
+    /// `storeCheck(prfFirst:)` has just stored. Any mismatch or a missing check value refuses.
+    func enable(afterVerifiedAssertion prfFirst: Data) -> Bool {
+        guard !enabled else { return true }
+        guard let expected = Self.storedCheck(), let check = try? unlockCheck(prfFirst: prfFirst),
+              Self.constantTimeEqual(check, expected)
+        else { return false }
+        enabled = true
+        return true
+    }
+
     /// Turns the lock off; needs an unlock too.
     func disable() async -> Bool {
         guard enabled else { return true }

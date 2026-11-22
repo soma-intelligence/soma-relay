@@ -318,9 +318,9 @@ struct OnboardingView: View {
         Task {
             defer { protecting = false }
             do {
-                _ = try await model.vault.setUp(userName: model.passkeyUserName)
-                // The person chose the passkey: the lock goes on through it.
-                _ = await model.lock.enable()
+                // The person chose the passkey: the lock goes on through the setup's own
+                // assertion (two system prompts in all: create, then one assertion).
+                _ = try await model.vault.setUp(userName: model.passkeyUserName, enableLock: true)
                 Haptics.success()
                 step = .card
             } catch {

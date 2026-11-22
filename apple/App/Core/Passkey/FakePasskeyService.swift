@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Stand-in for UI tests, picked by the launch argument `-uitest-passkey ok|noprf|fail|nocred`.
 /// The constants below are a contract: UI tests and the vault seeding tool reuse them.
@@ -12,6 +13,9 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
         case fail
         /// No passkey on the device: every call throws `PasskeyFailure.noCredential`.
         case nocred
+        /// As `ok` for registration and the first assertion of the process, then every assertion
+        /// throws `PasskeyFailure.cancelled`: shows that nothing asks for a second assertion.
+        case once
     }
 
     static let launchArgument = "-uitest-passkey"
@@ -23,6 +27,7 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
     static let prfSecond = Data(repeating: 0x22, count: 32)
 
     let mode: Mode
+    private static let assertions = Mutex(0)
 
     /// The fake when the process was launched with `-uitest-passkey <mode>`, else nil.
     /// Debug builds only: a Release build never takes the fake.
@@ -38,7 +43,7 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
 
     func register(userName: String, userHandle: Data) async throws -> PasskeyRegistration {
         switch mode {
-        case .ok: PasskeyRegistration(credentialID: Self.credentialID, prfSupported: true)
+        case .ok, .once: PasskeyRegistration(credentialID: Self.credentialID, prfSupported: true)
         case .noprf: PasskeyRegistration(credentialID: Self.credentialID, prfSupported: false)
         case .fail: throw PasskeyFailure.cancelled
         case .nocred: throw PasskeyFailure.noCredential
@@ -46,8 +51,13 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
     }
 
     func assert(credentialID: Data?) async throws -> PasskeyAssertion {
-        switch mode {
-        case .ok: PasskeyAssertion(credentialID: Self.credentialID, prfFirst: Self.prfFirst, prfSecond: Self.prfSecond)
+        let count = Self.assertions.withLock { n in
+            n += 1
+            return n
+        }
+        if mode == .once, count > 1 { throw PasskeyFailure.cancelled }
+        return switch mode {
+        case .ok, .once: PasskeyAssertion(credentialID: Self.credentialID, prfFirst: Self.prfFirst, prfSecond: Self.prfSecond)
         case .noprf: PasskeyAssertion(credentialID: Self.credentialID, prfFirst: nil, prfSecond: nil)
         case .fail: throw PasskeyFailure.cancelled
         case .nocred: throw PasskeyFailure.noCredential
