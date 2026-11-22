@@ -34,7 +34,7 @@ struct ContactsView: View {
                     }
                     .accessibilityHint("Affiche ton QR à scanner")
                 }
-                let strangers = model.nearby.filter { $0.name != nil }
+                let strangers = model.nearby.filter { $0.name != nil && !model.isContact(nearby: $0) }
                 if !strangers.isEmpty {
                     Section("À proximité sur le mesh") {
                         ForEach(strangers) { peer in
@@ -113,5 +113,13 @@ struct ContactRow: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+extension AppModel {
+    /// A nearby phone that is already in the directory (its compact link names a contact).
+    func isContact(nearby peer: NearbyPeer) -> Bool {
+        guard let link = peer.compactLink, let core, let fp = Self.fingerprint(ofCompact: link, core: core) else { return false }
+        return contacts.contains { $0.fingerprint == fp }
     }
 }
