@@ -275,3 +275,135 @@ impl WasmMeshRouter {
         bytes_array(self.inner.borrow_mut().frames_for(envelope, mtu))
     }
 }
+
+// ------------------------------------------------------------------ passkey vault
+//
+// `VaultPlain` crosses as a plain object:
+// `{ v: number, engine: Uint8Array, handle: string | null, nodeUrl: string | null,
+//    channelsPrefs: Uint8Array, photo: Uint8Array | null }`.
+// Errors are `Error` whose `name` is `TooLarge`, `BadMagic`, `Decrypt`, `Parse`, `BadKey`
+// or `Malformed` (a field of the object has the wrong type).
+
+fn named_err(name: &str, message: &str) -> JsValue {
+    let x = js_sys::Error::new(message);
+    x.set_name(name);
+    x.into()
+}
+
+fn vault_err(e: core::VaultError) -> JsValue {
+    named_err(e.kind(), e.message())
+}
+
+fn key32(b: &[u8]) -> Result<[u8; 32], JsValue> {
+    b.try_into()
+        .map_err(|_| named_err("BadKey", &format!("expected 32 bytes, got {}", b.len())))
+}
+
+fn field(o: &JsValue, name: &str) -> Result<JsValue, JsValue> {
+    Reflect::get(o, &name.into())
+}
+
+fn bytes_field(o: &JsValue, name: &str) -> Result<Vec<u8>, JsValue> {
+    let v = field(o, name)?;
+    v.dyn_into::<Uint8Array>()
+        .map(|a| a.to_vec())
+        .map_err(|_| named_err("Malformed", &format!("{name} must be a Uint8Array")))
+}
+
+fn opt_bytes_field(o: &JsValue, name: &str) -> Result<Option<Vec<u8>>, JsValue> {
+    let v = field(o, name)?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    bytes_field(o, name).map(Some)
+}
+
+fn opt_string_field(o: &JsValue, name: &str) -> Result<Option<String>, JsValue> {
+    let v = field(o, name)?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    v.as_string()
+        .map(Some)
+        .ok_or_else(|| named_err("Malformed", &format!("{name} must be a string")))
+}
+
+fn plain_from_js(o: &JsValue) -> Result<core::VaultPlain, JsValue> {
+    let v = field(o, "v")?
+        .as_f64()
+        .filter(|n| n.fract() == 0.0 && (0.0..=255.0).contains(n))
+        .ok_or_else(|| named_err("Malformed", "v must be an integer 0-255"))?;
+    Ok(core::VaultPlain {
+        v: v as u8,
+        engine: bytes_field(o, "engine")?,
+        handle: opt_string_field(o, "handle")?,
+        node_url: opt_string_field(o, "nodeUrl")?,
+        channels_prefs: bytes_field(o, "channelsPrefs")?,
+        photo: opt_bytes_field(o, "photo")?,
+    })
+}
+
+fn plain_to_js(p: core::VaultPlain) -> Result<Object, JsValue> {
+    let o = Object::new();
+    let opt_str = |s: Option<String>| s.map_or(JsValue::NULL, JsValue::from);
+    Reflect::set(&o, &"v".into(), &JsValue::from(p.v))?;
+    Reflect::set(&o, &"engine".into(), &Uint8Array::from(p.engine.as_slice()))?;
+    Reflect::set(&o, &"handle".into(), &opt_str(p.handle))?;
+    Reflect::set(&o, &"nodeUrl".into(), &opt_str(p.node_url))?;
+    Reflect::set(
+        &o,
+        &"channelsPrefs".into(),
+        &Uint8Array::from(p.channels_prefs.as_slice()),
+    )?;
+    let photo = p
+        .photo
+        .map_or(JsValue::NULL, |b| Uint8Array::from(b.as_slice()).into());
+    Reflect::set(&o, &"photo".into(), &photo)?;
+    Ok(o)
+}
+
+/// PRF salt of the unlock output, `SHA-256("soma-relay/unlock/v1")`.
+#[wasm_bindgen(js_name = prfSaltUnlock)]
+pub fn prf_salt_unlock() -> Vec<u8> {
+    core::vault::PRF_SALT_UNLOCK.to_vec()
+}
+
+/// PRF salt of the backup output, `SHA-256("soma-relay/backup/v1")`.
+#[wasm_bindgen(js_name = prfSaltBackup)]
+pub fn prf_salt_backup() -> Vec<u8> {
+    core::vault::PRF_SALT_BACKUP.to_vec()
+}
+
+#[wasm_bindgen(js_name = unlockCheck)]
+pub fn unlock_check(prf_first: &[u8]) -> Result<Vec<u8>, JsValue> {
+    Ok(core::vault::unlock_check(&key32(prf_first)?).to_vec())
+}
+
+#[wasm_bindgen(js_name = vaultKey)]
+pub fn vault_key(prf_second: &[u8]) -> Result<Vec<u8>, JsValue> {
+    Ok(core::vault::vault_key(&key32(prf_second)?).to_vec())
+}
+
+#[wasm_bindgen(js_name = vaultId)]
+pub fn vault_id(credential_id: &[u8]) -> String {
+    core::vault::vault_id(credential_id)
+}
+
+#[wasm_bindgen(js_name = sealVault)]
+pub fn seal_vault(key: &[u8], id: String, plain: JsValue) -> Result<Vec<u8>, JsValue> {
+    core::vault::seal_vault(&key32(key)?, &id, &plain_from_js(&plain)?).map_err(vault_err)
+}
+
+#[wasm_bindgen(js_name = openVault)]
+pub fn open_vault(key: &[u8], id: String, blob: &[u8]) -> Result<Object, JsValue> {
+    plain_to_js(core::vault::open_vault(&key32(key)?, &id, blob).map_err(vault_err)?)
+}
+
+#[wasm_bindgen(js_class = RelayEngine)]
+impl WasmRelayEngine {
+    /// Ed25519 signature for `PUT /v1/vault/{id}` (`X-Relay-Sig` = base64 of it).
+    #[wasm_bindgen(js_name = signVault)]
+    pub fn sign_vault(&self, id: String, blob: &[u8]) -> Vec<u8> {
+        self.inner.borrow().sign_vault(&id, blob).to_vec()
+    }
+}

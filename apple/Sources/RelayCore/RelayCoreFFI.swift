@@ -465,6 +465,22 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -819,6 +835,11 @@ public protocol RelayEngineProtocol: AnyObject, Sendable {
     func signDirectoryEntry(handle: String) throws  -> DirectoryEntry
     
     func signNodeChallenge(nonce: Data)  -> Data
+    
+    /**
+     * Ed25519 signature for `PUT /v1/vault/{id}` (`X-Relay-Sig` = base64 of it).
+     */
+    func signVault(id: String, blob: Data)  -> Data
     
 }
 open class RelayEngine: RelayEngineProtocol, @unchecked Sendable {
@@ -1297,6 +1318,20 @@ open func signNodeChallenge(nonce: Data) -> Data  {
 })
 }
     
+    /**
+     * Ed25519 signature for `PUT /v1/vault/{id}` (`X-Relay-Sig` = base64 of it).
+     */
+open func signVault(id: String, blob: Data) -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_method_relayengine_sign_vault(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),
+        FfiConverterData.lower(blob),uniffiCallStatus
+    )
+})
+}
+    
 
     
 }
@@ -1460,6 +1495,79 @@ public func FfiConverterTypeMeshResult_lower(_ value: MeshResult) -> RustBuffer 
 }
 
 
+/**
+ * Plaintext of the backup blob (`docs/specs/2026-11-22-passkey-unlock-backup.md` section 3).
+ */
+public struct VaultPlain: Equatable, Hashable {
+    public var v: UInt8
+    public var engine: Data
+    public var handle: String?
+    public var nodeUrl: String?
+    public var channelsPrefs: Data
+    public var photo: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(v: UInt8, engine: Data, handle: String?, nodeUrl: String?, channelsPrefs: Data, photo: Data?) {
+        self.v = v
+        self.engine = engine
+        self.handle = handle
+        self.nodeUrl = nodeUrl
+        self.channelsPrefs = channelsPrefs
+        self.photo = photo
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VaultPlain: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVaultPlain: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VaultPlain {
+        return
+            try VaultPlain(
+                v: FfiConverterUInt8.read(from: &buf), 
+                engine: FfiConverterData.read(from: &buf), 
+                handle: FfiConverterOptionString.read(from: &buf), 
+                nodeUrl: FfiConverterOptionString.read(from: &buf), 
+                channelsPrefs: FfiConverterData.read(from: &buf), 
+                photo: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VaultPlain, into buf: inout [UInt8]) {
+        FfiConverterUInt8.write(value.v, into: &buf)
+        FfiConverterData.write(value.engine, into: &buf)
+        FfiConverterOptionString.write(value.handle, into: &buf)
+        FfiConverterOptionString.write(value.nodeUrl, into: &buf)
+        FfiConverterData.write(value.channelsPrefs, into: &buf)
+        FfiConverterOptionData.write(value.photo, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultPlain_lift(_ buf: RustBuffer) throws -> VaultPlain {
+    return try FfiConverterTypeVaultPlain.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultPlain_lower(_ value: VaultPlain) -> RustBuffer {
+    return FfiConverterTypeVaultPlain.lower(value)
+}
+
+
 public 
 enum RelayError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -1604,6 +1712,136 @@ public func FfiConverterTypeRelayError_lower(_ value: RelayError) -> RustBuffer 
     return FfiConverterTypeRelayError.lower(value)
 }
 
+
+public 
+enum VaultError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * Larger than 1 MiB even without the photo.
+     */
+    case TooLarge(message: String
+    )
+    /**
+     * Not a `RVB1` blob.
+     */
+    case BadMagic(message: String
+    )
+    /**
+     * Wrong key or vault id, or tampered bytes.
+     */
+    case Decrypt(message: String
+    )
+    /**
+     * The plaintext is not a vault this version reads.
+     */
+    case Parse(message: String
+    )
+    /**
+     * A PRF output or vault key that is not 32 bytes.
+     */
+    case BadKey(message: String
+    )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension VaultError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
+    typealias SwiftType = VaultError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VaultError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .TooLarge(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .BadMagic(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .Decrypt(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .Parse(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .BadKey(
+            message: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: VaultError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .TooLarge(message):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .BadMagic(message):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .Decrypt(message):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .Parse(message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .BadKey(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultError_lift(_ buf: RustBuffer) throws -> VaultError {
+    return try FfiConverterTypeVaultError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultError_lower(_ value: VaultError) -> RustBuffer {
+    return FfiConverterTypeVaultError.lower(value)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -1701,6 +1939,79 @@ fileprivate struct FfiConverterSequenceData: FfiConverterRustBuffer {
         return seq
     }
 }
+public func openVault(key: Data, id: String, blob: Data)throws  -> VaultPlain  {
+    return try  FfiConverterTypeVaultPlain_lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_open_vault(
+        FfiConverterData.lower(key),
+        FfiConverterString.lower(id),
+        FfiConverterData.lower(blob),uniffiCallStatus
+    )
+})
+}
+/**
+ * PRF salt of the backup output, `SHA-256("soma-relay/backup/v1")`.
+ */
+public func prfSaltBackup() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_prf_salt_backup(uniffiCallStatus
+    )
+})
+}
+/**
+ * PRF salt of the unlock output, `SHA-256("soma-relay/unlock/v1")`.
+ */
+public func prfSaltUnlock() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_prf_salt_unlock(uniffiCallStatus
+    )
+})
+}
+/**
+ * Drops the photo when the blob would pass 1 MiB; still too large throws `TooLarge`.
+ */
+public func sealVault(key: Data, id: String, plain: VaultPlain)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_seal_vault(
+        FfiConverterData.lower(key),
+        FfiConverterString.lower(id),
+        FfiConverterTypeVaultPlain_lower(plain),uniffiCallStatus
+    )
+})
+}
+/**
+ * `HMAC-SHA256(unlock_key, "ok")`, stored to check the next unlock.
+ */
+public func unlockCheck(prfFirst: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_unlock_check(
+        FfiConverterData.lower(prfFirst),uniffiCallStatus
+    )
+})
+}
+/**
+ * 64 lowercase hex characters, the path of `/v1/vault/{id}`.
+ */
+public func vaultId(credentialId: Data) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_vault_id(
+        FfiConverterData.lower(credentialId),uniffiCallStatus
+    )
+})
+}
+public func vaultKey(prfSecond: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_vault_key(
+        FfiConverterData.lower(prfSecond),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -1716,6 +2027,27 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_relay_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_open_vault() != 19503) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_prf_salt_backup() != 5898) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_prf_salt_unlock() != 10011) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_seal_vault() != 48970) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_unlock_check() != 9048) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_vault_id() != 31442) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_vault_key() != 64305) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_relay_ffi_checksum_method_meshrouter_frames_for() != 27192) {
         return InitializationResult.apiChecksumMismatch
@@ -1835,6 +2167,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_relay_ffi_checksum_method_relayengine_sign_node_challenge() != 8444) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_method_relayengine_sign_vault() != 930) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_relay_ffi_checksum_constructor_meshrouter_new() != 2193) {

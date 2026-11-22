@@ -13,12 +13,14 @@ pub mod hybrid;
 pub mod mesh;
 pub mod session;
 pub mod util;
+pub mod vault;
 pub mod words;
 
 pub use engine::{CompactJson, ContactJson, InboundJson, RelayEngine};
 pub use envelope::Envelope;
-pub use error::{RelayError, Result};
+pub use error::{RelayError, Result, VaultError};
 pub use mesh::{MeshResult, MeshRouter};
+pub use vault::VaultPlain;
 
 #[cfg(test)]
 mod tests;

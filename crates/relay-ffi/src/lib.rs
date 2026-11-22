@@ -246,6 +246,148 @@ impl RelayEngine {
     }
 }
 
+// ------------------------------------------------------------------ passkey vault
+
+#[derive(Debug, uniffi::Error)]
+pub enum VaultError {
+    /// Larger than 1 MiB even without the photo.
+    TooLarge { message: String },
+    /// Not a `RVB1` blob.
+    BadMagic { message: String },
+    /// Wrong key or vault id, or tampered bytes.
+    Decrypt { message: String },
+    /// The plaintext is not a vault this version reads.
+    Parse { message: String },
+    /// A PRF output or vault key that is not 32 bytes.
+    BadKey { message: String },
+}
+
+impl std::error::Error for VaultError {}
+
+impl std::fmt::Display for VaultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (k, m) = match self {
+            VaultError::TooLarge { message } => ("TooLarge", message),
+            VaultError::BadMagic { message } => ("BadMagic", message),
+            VaultError::Decrypt { message } => ("Decrypt", message),
+            VaultError::Parse { message } => ("Parse", message),
+            VaultError::BadKey { message } => ("BadKey", message),
+        };
+        write!(f, "{k}: {m}")
+    }
+}
+
+impl From<core::VaultError> for VaultError {
+    fn from(e: core::VaultError) -> Self {
+        let message = e.message().to_string();
+        match e {
+            core::VaultError::TooLarge => VaultError::TooLarge { message },
+            core::VaultError::BadMagic => VaultError::BadMagic { message },
+            core::VaultError::Decrypt => VaultError::Decrypt { message },
+            core::VaultError::Parse => VaultError::Parse { message },
+        }
+    }
+}
+
+fn key32(b: &[u8]) -> std::result::Result<[u8; 32], VaultError> {
+    b.try_into().map_err(|_| VaultError::BadKey {
+        message: format!("expected 32 bytes, got {}", b.len()),
+    })
+}
+
+/// Plaintext of the backup blob (`docs/specs/2026-11-22-passkey-unlock-backup.md` section 3).
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct VaultPlain {
+    pub v: u8,
+    pub engine: Vec<u8>,
+    pub handle: Option<String>,
+    pub node_url: Option<String>,
+    pub channels_prefs: Vec<u8>,
+    pub photo: Option<Vec<u8>>,
+}
+
+impl From<VaultPlain> for core::VaultPlain {
+    fn from(p: VaultPlain) -> Self {
+        core::VaultPlain {
+            v: p.v,
+            engine: p.engine,
+            handle: p.handle,
+            node_url: p.node_url,
+            channels_prefs: p.channels_prefs,
+            photo: p.photo,
+        }
+    }
+}
+
+impl From<core::VaultPlain> for VaultPlain {
+    fn from(p: core::VaultPlain) -> Self {
+        VaultPlain {
+            v: p.v,
+            engine: p.engine,
+            handle: p.handle,
+            node_url: p.node_url,
+            channels_prefs: p.channels_prefs,
+            photo: p.photo,
+        }
+    }
+}
+
+/// PRF salt of the unlock output, `SHA-256("soma-relay/unlock/v1")`.
+#[uniffi::export]
+pub fn prf_salt_unlock() -> Vec<u8> {
+    core::vault::PRF_SALT_UNLOCK.to_vec()
+}
+
+/// PRF salt of the backup output, `SHA-256("soma-relay/backup/v1")`.
+#[uniffi::export]
+pub fn prf_salt_backup() -> Vec<u8> {
+    core::vault::PRF_SALT_BACKUP.to_vec()
+}
+
+/// `HMAC-SHA256(unlock_key, "ok")`, stored to check the next unlock.
+#[uniffi::export]
+pub fn unlock_check(prf_first: Vec<u8>) -> std::result::Result<Vec<u8>, VaultError> {
+    Ok(core::vault::unlock_check(&key32(&prf_first)?).to_vec())
+}
+
+#[uniffi::export]
+pub fn vault_key(prf_second: Vec<u8>) -> std::result::Result<Vec<u8>, VaultError> {
+    Ok(core::vault::vault_key(&key32(&prf_second)?).to_vec())
+}
+
+/// 64 lowercase hex characters, the path of `/v1/vault/{id}`.
+#[uniffi::export]
+pub fn vault_id(credential_id: Vec<u8>) -> String {
+    core::vault::vault_id(&credential_id)
+}
+
+/// Drops the photo when the blob would pass 1 MiB; still too large throws `TooLarge`.
+#[uniffi::export]
+pub fn seal_vault(
+    key: Vec<u8>,
+    id: String,
+    plain: VaultPlain,
+) -> std::result::Result<Vec<u8>, VaultError> {
+    Ok(core::vault::seal_vault(&key32(&key)?, &id, &plain.into())?)
+}
+
+#[uniffi::export]
+pub fn open_vault(
+    key: Vec<u8>,
+    id: String,
+    blob: Vec<u8>,
+) -> std::result::Result<VaultPlain, VaultError> {
+    Ok(core::vault::open_vault(&key32(&key)?, &id, &blob)?.into())
+}
+
+#[uniffi::export]
+impl RelayEngine {
+    /// Ed25519 signature for `PUT /v1/vault/{id}` (`X-Relay-Sig` = base64 of it).
+    pub fn sign_vault(&self, id: String, blob: Vec<u8>) -> Vec<u8> {
+        self.lock().sign_vault(&id, &blob).to_vec()
+    }
+}
+
 /// Result of `sign_directory_entry`.
 #[derive(uniffi::Record, Debug, Clone)]
 pub struct DirectoryEntry {

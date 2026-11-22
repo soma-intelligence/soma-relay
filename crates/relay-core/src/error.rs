@@ -67,3 +67,45 @@ pub(crate) fn malformed(m: impl Into<String>) -> RelayError {
 pub(crate) fn decrypt_err() -> RelayError {
     RelayError::Decrypt("authentication failed".into())
 }
+
+/// Errors of the passkey vault (`crate::vault`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultError {
+    /// The blob would exceed 1 MiB even without the photo.
+    TooLarge,
+    /// Not a `RVB1` blob.
+    BadMagic,
+    /// Wrong key or vault id, or tampered bytes.
+    Decrypt,
+    /// The plaintext is not a `VaultPlain` this version reads.
+    Parse,
+}
+
+impl VaultError {
+    /// Variant name, used by the FFI and wasm wrappers.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            VaultError::TooLarge => "TooLarge",
+            VaultError::BadMagic => "BadMagic",
+            VaultError::Decrypt => "Decrypt",
+            VaultError::Parse => "Parse",
+        }
+    }
+
+    pub fn message(&self) -> &'static str {
+        match self {
+            VaultError::TooLarge => "vault blob larger than 1 MiB",
+            VaultError::BadMagic => "not a vault blob",
+            VaultError::Decrypt => "vault does not decrypt with this key",
+            VaultError::Parse => "vault contents do not parse",
+        }
+    }
+}
+
+impl fmt::Display for VaultError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.kind(), self.message())
+    }
+}
+
+impl std::error::Error for VaultError {}

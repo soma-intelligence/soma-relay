@@ -324,6 +324,13 @@ impl RelayEngine {
         Ok((text, sig.to_vec()))
     }
 
+    /// Ed25519 signature (the identity key bound to the mailbox on the node) over
+    /// `vault::vault_sig_message(id, blob)`, for `PUT /v1/vault/{id}` (`X-Relay-Sig`).
+    /// The `relay-vault-v1` prefix keeps it apart from every other message this key signs.
+    pub fn sign_vault(&self, id: &str, blob: &[u8]) -> [u8; 64] {
+        self.st.identity.sign.ed_sign(&crate::vault::vault_sig_message(id, blob))
+    }
+
     pub fn rotate_prekey_if_due(&mut self, now_ms: i64) -> bool {
         self.tick(now_ms);
         let id = &mut self.st.identity;
