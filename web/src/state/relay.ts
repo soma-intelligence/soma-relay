@@ -4,13 +4,14 @@
 // Router (spec section 6): an open WebRTC data channel first, then the node, then the local
 // test bus, else the outbox (dashed "en route" bubbles) flushed when a transport comes back.
 
-import type { AppMessage, Attachment, CallSignal, Contact, Engine, EngineFactory, GeoPoint, Group, Inbound, LinkPreview, PollSpec } from '../core/engine'
+import type { AppMessage, Attachment, CallSignal, Contact, Engine, EngineFactory, GeoPoint, Group, Inbound, LinkPreview, PollSpec, ProfileWire } from '../core/engine'
 import { RelayError } from '../core/engine'
 import { loadEngineFactory } from '../core/loadEngine'
 import { Storage } from '../lib/storage'
 import { localGet, localSet, PROFILE } from '../lib/profile'
 import { sha3_256 } from '@noble/hashes/sha3.js'
-import { buf, fromB64, sha256, toB64, toB64Url, toHex, utf8, uuidv7 } from '../lib/bytes'
+import { buf, fpShort, fromB64, sha256, toB64, toB64Url, toHex, utf8, uuidv7 } from '../lib/bytes'
+import { avatarDataUrl, avatarHash, checkAvatar } from '../lib/avatar'
 import { NodeClient, type NodeEvent } from '../net/nodeClient'
 import { LocalBus } from '../net/localBus'
 import { isDataChannelSignal, P2P } from '../net/p2p'
@@ -26,6 +27,29 @@ export interface Me {
   fingerprint: string
   mailbox: string
   words: string[]
+}
+
+/** A photo and name received from a contact or a group admin, or my own (id 'me'). */
+export interface PeerProfile {
+  /** Fingerprint, 'g:' + group id, or 'me'. */
+  id: string
+  name?: string
+  /** Base64 JPEG, 256 px. */
+  avatar?: string
+  /** Hex SHA-256 of the JPEG bytes. */
+  hash?: string
+  ts: number
+}
+
+/** The in-app banner for a message in another conversation than the open one. */
+export interface Banner {
+  seq: number
+  convId: string
+  msgId: string
+  /** Avatar id: the sender for direct chats, the group otherwise. */
+  avatarId: string
+  title: string
+  text: string
 }
 
 export interface Snapshot {
@@ -52,6 +76,9 @@ export interface Snapshot {
   jump: { convId: string; id: string } | null
   /** My live location messages being shared right now. */
   liveShares: Set<string>
+  /** Photos and names by fingerprint, 'g:' + group id, and 'me'. */
+  profiles: Record<string, PeerProfile>
+  banner: Banner | null
 }
 
 const INLINE_MAX = 48 * 1024
@@ -184,6 +211,8 @@ export class Relay {
       toast: null,
       jump: null,
       liveShares: new Set(),
+      profiles: {},
+      banner: null,
     }
     this.p2p = new P2P(
       () => this.engine?.fingerprintHex() ?? '',
@@ -284,7 +313,13 @@ export class Relay {
     e.rotatePrekeyIfDue(Date.now())
     const convs = await this.store!.allJson<Conversation>('conversations')
     this.outbox = await this.store!.allJson<OutboxItem>('outbox')
+    const profiles: Record<string, PeerProfile> = {}
+    for (const p of await this.store!.allJson<PeerProfile>('profiles')) profiles[p.id] = p
+    this.sentProfile = (await this.store!.getJson<Record<string, string>>('meta', 'profile-sent')) ?? {}
+    this.renamed = new Set((await this.store!.getJson<string[]>('meta', 'renamed')) ?? [])
+    for (const g of e.groups()) this.groupMembers.set(g.id, [...g.members])
     this.set({
+      profiles,
       phase: 'ready',
       me: this.meOf(e),
       contacts: e.contacts(),
@@ -576,11 +611,25 @@ export class Relay {
         if (!convId.startsWith('g:')) return
         const ev = (m.group as { event?: string; name?: string } | undefined)?.event
         const known = this.snap.conversations.some((c) => c.id === convId)
-        if (ev === 'removed') await this.addSystem(convId, 'Tu as été retiré du groupe.')
-        else if (!known) await this.addSystem(convId, `${this.titleOf(inb.from)} t’a ajouté au groupe.`)
+        if (ev === 'removed') {
+          await this.addSystem(convId, 'Tu as été retiré du groupe.')
+          this.groupMembers.delete(convId.slice(2))
+        } else if (!known) {
+          await this.addSystem(convId, `${this.nameOf(inb.from)} t’a ajouté au groupe.`)
+          await this.syncMembers(convId.slice(2), false)
+          // Spec 6: my profile goes into a group when I am added to it.
+          this.ensureProfile(convId)
+        } else await this.syncMembers(convId.slice(2), true)
         return
       }
       case 'profile':
+        await this.applyProfile(inb.from, m.profile)
+        return
+      case 'group-profile':
+        if (inb.group) await this.applyGroupProfile(inb.group, inb.from, m.group_profile)
+        return
+      case 'group-leave':
+        if (inb.group) await this.applyGroupLeave(inb.group, inb.from)
         return
       case 'edit':
         await this.applyEdit(convId, inb.from, m)
@@ -619,7 +668,11 @@ export class Relay {
     if (!inb.group) this.sendReceipt(inb.from, [m.id], active ? 'read' : 'delivered')
     if (active) await this.updateStatus([m.id], 'read')
     const me = this.engine?.fingerprintHex()
-    this.notify(convId, msg, !!me && !!msg.mentions?.includes(me))
+    const mention = !!me && !!msg.mentions?.includes(me)
+    this.notify(convId, msg, mention)
+    this.showBanner(convId, msg, mention)
+    // Spec 6: a new contact gets my profile after the first message received from them.
+    this.ensureProfile(convId)
     // Small media downloads right away, so they show without a tap.
     if (m.attachment && m.attachment.size < 8 * 1024 * 1024 && msg.kind !== 'file') void this.mediaUrl(msg)
   }
@@ -662,7 +715,7 @@ export class Relay {
   /** Body of a notification, following the spec text rules. */
   private notifyBody(convId: string, m: ChatMessage): string {
     const body = previewOf(m)
-    return convId.startsWith('g:') && m.from !== 'me' ? `${this.titleOf(m.from)} : ${body}` : body
+    return convId.startsWith('g:') && m.from !== 'me' ? `${this.nameOf(m.from)} : ${body}` : body
   }
 
   private notify(convId: string, m: ChatMessage, mention: boolean) {
@@ -674,7 +727,8 @@ export class Relay {
     const previews = this.snap.settings.notifPreviews
     const title = previews ? this.titleOf(convId) : 'Soma Relay'
     const body = previews ? this.notifyBody(convId, m) : 'Nouveau message'
-    const opts: NotificationOptions = { body, tag: convId, icon: '/icon.svg', data: { conv: convId, url: location.href } }
+    const face = previews ? (this.avatarUrl(convId.startsWith('g:') ? convId : m.from) ?? this.avatarUrl(convId)) : undefined
+    const opts: NotificationOptions = { body, tag: convId, icon: face ?? '/icon.svg', data: { conv: convId, url: location.href } }
     const fallback = () => {
       try {
         const n = new Notification(title, opts)
@@ -746,8 +800,22 @@ export class Relay {
   // Conversations and messages
 
   titleOf(convId: string): string {
-    if (convId.startsWith('g:')) return this.snap.groups.find((g) => g.id === convId.slice(2))?.name ?? 'Groupe'
-    return this.snap.contacts.find((c) => c.fingerprint === convId)?.name ?? 'Inconnu'
+    if (convId.startsWith('g:'))
+      return this.snap.profiles[convId]?.name ?? this.snap.groups.find((g) => g.id === convId.slice(2))?.name ?? 'Groupe'
+    return this.snap.contacts.find((c) => c.fingerprint === convId)?.name ?? this.snap.profiles[convId]?.name ?? 'Inconnu'
+  }
+
+  /** Name of a person: contact name, else the name of their profile, else a short fingerprint. */
+  nameOf(fp: string): string {
+    if (fp === 'me' || fp === this.snap.me?.fingerprint) return this.snap.me?.name ?? 'Toi'
+    return this.snap.contacts.find((c) => c.fingerprint === fp)?.name ?? this.snap.profiles[fp]?.name ?? fpShort(fp)
+  }
+
+  /** Photo of a person ('me' or fingerprint) or of a group ('g:' + id), as a data URL. */
+  avatarUrl(id: string): string | undefined {
+    const key = id === this.snap.me?.fingerprint ? 'me' : id
+    const a = this.snap.profiles[key]?.avatar
+    return a ? avatarDataUrl(a) : undefined
   }
 
   private findMessage(convId: string, id: string): ChatMessage | undefined {
@@ -790,7 +858,7 @@ export class Relay {
   }
 
   async openConversation(convId: string | null) {
-    this.set({ activeConv: convId })
+    this.set({ activeConv: convId, banner: this.snap.banner?.convId === convId ? null : this.snap.banner })
     if (!convId) return
     if (!this.snap.conversations.some((c) => c.id === convId)) {
       // A new conversation shows up in the list only once a message exists.
@@ -921,11 +989,13 @@ export class Relay {
   }
 
   /** Control messages (edit, delete, votes...): best effort, queued when offline. */
-  private control(convId: string, part: Omit<AppMessage, 'id' | 'ts'>, queue = true) {
+  private control(convId: string, part: Omit<AppMessage, 'id' | 'ts'>, queue = true): boolean {
     try {
       this.deliver(convId, { id: uuidv7(), ts: Date.now(), ...part }, queue)
+      return true
     } catch (e) {
       console.warn('control message failed', e)
+      return false
     }
   }
 
@@ -1463,6 +1533,9 @@ export class Relay {
 
   renameContact(fp: string, name: string) {
     this.engineOrThrow.renameContact(fp, name)
+    // A local rename wins over the name in their profile (spec 6).
+    this.renamed.add(fp)
+    void this.store?.putJson('meta', 'renamed', [...this.renamed])
     this.refreshIdentity()
     void this.retitle(fp)
   }
@@ -1499,13 +1572,17 @@ export class Relay {
 
   // Groups
 
-  async createGroup(name: string, members: string[]): Promise<string> {
+  async createGroup(name: string, members: string[], photo?: Uint8Array | null): Promise<string> {
     const e = this.engineOrThrow
-    const gid = e.createGroup(name.trim(), members)
+    const clean = name.trim()
+    const gid = e.createGroup(clean, members)
     this.refreshIdentity()
+    this.groupMembers.set(gid, [...(e.groups().find((g) => g.id === gid)?.members ?? [])])
     const convId = `g:${gid}`
-    this.deliver(convId, { id: uuidv7(), ts: Date.now(), kind: 'group-op', group: { op: 'create', name: name.trim() } })
-    await this.addSystem(convId, `Tu as créé le groupe « ${name.trim()} ».`)
+    this.deliver(convId, { id: uuidv7(), ts: Date.now(), kind: 'group-op', group: { op: 'create', name: clean } })
+    await this.addSystem(convId, `Tu as créé le groupe « ${clean} ».`)
+    this.ensureProfile(convId)
+    if (photo) await this.setGroupProfile(gid, { avatar: photo }, true)
     return convId
   }
 
@@ -1515,22 +1592,280 @@ export class Relay {
     this.refreshIdentity()
     const g = e.groups().find((x) => x.id === gid)
     if (g) this.fanout(g, envs)
-    await this.addSystem(`g:${gid}`, `${this.titleOf(fp)} a rejoint le groupe.`)
+    this.groupMembers.set(gid, [...(g?.members ?? [])])
+    await this.addSystem(`g:${gid}`, `Tu as ajouté ${this.nameOf(fp)} au groupe.`)
+    // The newcomer gets the group photo and name, and my face (spec 6).
+    this.resendGroupProfile(gid)
+    delete this.sentProfile[`g:${gid}`]
+    this.ensureProfile(`g:${gid}`)
   }
 
-  async groupRemove(gid: string, fp: string) {
+  async groupRemove(gid: string, fp: string, line = true) {
     const e = this.engineOrThrow
     const g0 = e.groups().find((x) => x.id === gid)
     const envs = e.groupRemove(gid, fp)
     this.refreshIdentity()
     if (g0) this.fanout(g0, envs)
-    await this.addSystem(`g:${gid}`, `${this.titleOf(fp)} a quitté le groupe.`)
+    this.groupMembers.set(gid, [...(e.groups().find((x) => x.id === gid)?.members ?? [])])
+    if (line) await this.addSystem(`g:${gid}`, `Tu as retiré ${this.nameOf(fp)} du groupe.`)
   }
 
+  /** Says goodbye in the group (spec 6, `group-leave`), then leaves locally and forgets it. */
   async leaveGroup(gid: string) {
+    const convId = `g:${gid}`
+    this.control(convId, { kind: 'group-leave' })
     this.engineOrThrow.leaveGroup(gid)
+    this.groupMembers.delete(gid)
+    delete this.sentProfile[convId]
+    void this.store?.putJson('meta', 'profile-sent', this.sentProfile)
     this.refreshIdentity()
-    await this.deleteConversation(`g:${gid}`)
+    await this.deleteConversation(convId)
+    await this.dropProfile(convId)
+  }
+
+  /** Last known members per group, to say who joined or left when the op log moves. */
+  private groupMembers = new Map<string, string[]>()
+  /** `gid|fp` of members who said `group-leave`, so the op that follows adds no second line. */
+  private leftRecently = new Set<string>()
+
+  private async syncMembers(gid: string, lines: boolean) {
+    const g = this.engine?.groups().find((x) => x.id === gid)
+    if (!g) return
+    const prev = this.groupMembers.get(gid)
+    this.groupMembers.set(gid, [...g.members])
+    if (!prev || !lines) return
+    const me = this.engine!.fingerprintHex()
+    const added = g.members.filter((fp) => !prev.includes(fp) && fp !== me)
+    const gone = prev.filter((fp) => !g.members.includes(fp) && fp !== me)
+    for (const fp of added) await this.addSystem(`g:${gid}`, `${this.nameOf(fp)} a rejoint le groupe.`)
+    for (const fp of gone) {
+      if (this.leftRecently.delete(`${gid}|${fp}`)) continue
+      await this.addSystem(`g:${gid}`, `${this.nameOf(fp)} ne fait plus partie du groupe.`)
+    }
+    // New faces in the group: they get my profile once.
+    if (added.length) {
+      delete this.sentProfile[`g:${gid}`]
+      this.ensureProfile(`g:${gid}`)
+    }
+  }
+
+  private async applyGroupLeave(gid: string, from: string) {
+    const e = this.engine
+    const g = e?.groups().find((x) => x.id === gid)
+    if (!e || !g || !g.members.includes(from)) return
+    this.leftRecently.add(`${gid}|${from}`)
+    await this.addSystem(`g:${gid}`, `${this.nameOf(from)} a quitté le groupe.`)
+    // An admin removes the leaver, so the sender key rotates for everyone else.
+    if (g.admins.includes(e.fingerprintHex())) {
+      try {
+        await this.groupRemove(gid, from, false)
+      } catch (err) {
+        console.warn('group remove after leave failed', err)
+      }
+    }
+  }
+
+  // Profiles (spec 6)
+
+  private sentProfile: Record<string, string> = {}
+  private renamed = new Set<string>()
+
+  private async putProfile(p: PeerProfile) {
+    this.set({ profiles: { ...this.snap.profiles, [p.id]: p } })
+    await this.store?.putJson('profiles', p.id, p)
+  }
+
+  private async dropProfile(id: string) {
+    if (!this.snap.profiles[id]) return
+    const profiles = { ...this.snap.profiles }
+    delete profiles[id]
+    this.set({ profiles })
+    await this.store?.delete('profiles', id)
+  }
+
+  /** What I last sent: photo hash and name. */
+  private profileKey(): string {
+    return `${this.snap.profiles.me?.hash ?? '-'}|${this.snap.me?.name ?? ''}`
+  }
+
+  /** Sends my profile to a contact or into a group, unless that exact profile went there already. */
+  private ensureProfile(target: string) {
+    if (!this.engine) return
+    const key = this.profileKey()
+    if (this.sentProfile[target] === key) return
+    if (target.startsWith('g:')) {
+      if (!this.engine.groups().some((g) => g.id === target.slice(2))) return
+    } else if (!this.snap.contacts.some((c) => c.fingerprint === target)) return
+    const mine = this.snap.profiles.me
+    const profile: ProfileWire = { name: this.snap.me?.name ?? '' }
+    if (mine?.avatar) {
+      profile.avatar = mine.avatar
+      profile.avatar_hash = mine.hash
+    } else profile.avatar = null
+    if (!this.control(target, { kind: 'profile', profile })) return
+    this.sentProfile[target] = key
+    void this.store?.putJson('meta', 'profile-sent', this.sentProfile)
+  }
+
+  /** After a change of photo or name: every conversation gets it once. */
+  private broadcastProfile() {
+    for (const c of this.snap.conversations) this.ensureProfile(c.id)
+  }
+
+  /** Sets (bytes) or removes (null) my photo and tells everyone. */
+  async setMyAvatar(jpeg: Uint8Array | null) {
+    const cur = this.snap.profiles.me
+    if (jpeg) await this.putProfile({ ...cur, id: 'me', avatar: toB64(jpeg), hash: await avatarHash(jpeg), ts: Date.now() })
+    else if (cur?.avatar) await this.putProfile({ id: 'me', ts: Date.now() })
+    else return
+    this.broadcastProfile()
+  }
+
+  /** Validates and stores a photo payload. Returns the patch, or null for a no-op or bad data. */
+  private async readProfile(cur: PeerProfile | undefined, p: ProfileWire): Promise<{ avatar?: string; hash?: string; removed?: boolean } | null> {
+    if (p.avatar === null) return cur?.avatar ? { removed: true } : null
+    if (typeof p.avatar !== 'string') return null
+    const claimed = typeof p.avatar_hash === 'string' ? p.avatar_hash.toLowerCase() : undefined
+    if (claimed && cur?.hash === claimed) return null
+    const hash = await checkAvatar(p.avatar)
+    if (!hash || (claimed && claimed !== hash) || hash === cur?.hash) return null
+    return { avatar: p.avatar, hash }
+  }
+
+  private async applyProfile(from: string, raw: unknown) {
+    if (!raw || typeof raw !== 'object') return
+    const p = raw as ProfileWire
+    const cur = this.snap.profiles[from]
+    const next: PeerProfile = { ...cur, id: from, ts: Date.now() }
+    let changed = false
+    const photo = await this.readProfile(cur, p)
+    if (photo?.removed) {
+      delete next.avatar
+      delete next.hash
+      changed = true
+    } else if (photo) {
+      next.avatar = photo.avatar
+      next.hash = photo.hash
+      changed = true
+    }
+    const name = typeof p.name === 'string' ? p.name.trim().slice(0, 64) : ''
+    if (name && name !== cur?.name) {
+      next.name = name
+      changed = true
+      const c = this.snap.contacts.find((x) => x.fingerprint === from)
+      if (c && c.name !== name && !this.renamed.has(from)) {
+        this.engineOrThrow.renameContact(from, name)
+        this.refreshIdentity()
+        void this.retitle(from)
+      }
+    }
+    if (changed) await this.putProfile(next)
+  }
+
+  private async applyGroupProfile(gid: string, from: string, raw: unknown) {
+    if (!raw || typeof raw !== 'object') return
+    const g = this.engine?.groups().find((x) => x.id === gid)
+    if (!g || !g.admins.includes(from)) return // admins only (spec 6)
+    const id = `g:${gid}`
+    const p = raw as ProfileWire
+    const cur = this.snap.profiles[id]
+    const next: PeerProfile = { ...cur, id, ts: Date.now() }
+    const who = this.nameOf(from)
+    const lines: string[] = []
+    const photo = await this.readProfile(cur, p)
+    if (photo?.removed) {
+      delete next.avatar
+      delete next.hash
+      lines.push(`${who} a retiré la photo du groupe.`)
+    } else if (photo) {
+      next.avatar = photo.avatar
+      next.hash = photo.hash
+      lines.push(`${who} a changé la photo du groupe.`)
+    }
+    const name = typeof p.name === 'string' ? p.name.trim().slice(0, 64) : ''
+    if (name && name !== this.titleOf(id)) {
+      next.name = name
+      lines.push(`${who} a renommé le groupe « ${name} ».`)
+    } else if (name) next.name = name
+    if (!lines.length && next.name === cur?.name) return
+    await this.putProfile(next)
+    await this.retitle(id)
+    for (const l of lines) await this.addSystem(id, l)
+  }
+
+  /** Admin only: changes the group photo (bytes, or null to remove) and/or name. */
+  async setGroupProfile(gid: string, change: { name?: string; avatar?: Uint8Array | null }, quiet = false) {
+    const e = this.engineOrThrow
+    const g = e.groups().find((x) => x.id === gid)
+    if (!g || !g.admins.includes(e.fingerprintHex())) throw new Error('Seul un admin peut changer le groupe.')
+    const id = `g:${gid}`
+    const cur = this.snap.profiles[id]
+    const next: PeerProfile = { ...cur, id, ts: Date.now() }
+    const wire: ProfileWire = {}
+    const lines: string[] = []
+    if (change.avatar === null && cur?.avatar) {
+      delete next.avatar
+      delete next.hash
+      wire.avatar = null
+      lines.push('Tu as retiré la photo du groupe.')
+    } else if (change.avatar) {
+      next.avatar = toB64(change.avatar)
+      next.hash = await avatarHash(change.avatar)
+      wire.avatar = next.avatar
+      wire.avatar_hash = next.hash
+      lines.push('Tu as changé la photo du groupe.')
+    }
+    const name = change.name?.trim().slice(0, 64)
+    if (name && name !== this.titleOf(id)) {
+      next.name = name
+      wire.name = name
+      lines.push(`Tu as renommé le groupe « ${name} ».`)
+    }
+    if (!lines.length) return
+    this.control(id, { kind: 'group-profile', group_profile: wire })
+    await this.putProfile(next)
+    await this.retitle(id)
+    if (!quiet) for (const l of lines) await this.addSystem(id, l)
+  }
+
+  /** Admin: sends the current group photo and name again, so a newcomer gets them. */
+  private resendGroupProfile(gid: string) {
+    const e = this.engine
+    const g = e?.groups().find((x) => x.id === gid)
+    const p = this.snap.profiles[`g:${gid}`]
+    if (!e || !g || !p || !g.admins.includes(e.fingerprintHex())) return
+    const wire: ProfileWire = {}
+    if (p.name) wire.name = p.name
+    if (p.avatar) {
+      wire.avatar = p.avatar
+      wire.avatar_hash = p.hash
+    }
+    if (wire.name || wire.avatar) this.control(`g:${gid}`, { kind: 'group-profile', group_profile: wire })
+  }
+
+  // In-app banner
+
+  private bannerSeq = 0
+
+  private showBanner(convId: string, m: ChatMessage, mention: boolean) {
+    if (document.visibilityState !== 'visible' || this.snap.activeConv === convId) return
+    const conv = this.snap.conversations.find((c) => c.id === convId)
+    if (conv?.mutedUntil && conv.mutedUntil > Date.now() && !mention) return
+    const group = convId.startsWith('g:')
+    this.set({
+      banner: {
+        seq: ++this.bannerSeq,
+        convId,
+        msgId: m.id,
+        avatarId: group ? convId : m.from,
+        title: this.titleOf(convId),
+        text: this.notifyBody(convId, m),
+      },
+    })
+  }
+
+  dismissBanner(seq?: number) {
+    if (this.snap.banner && (seq === undefined || this.snap.banner.seq === seq)) this.set({ banner: null })
   }
 
   /**
@@ -1585,6 +1920,7 @@ export class Relay {
     this.engineOrThrow.setDisplayName(name.trim())
     this.refreshIdentity()
     this.node?.reregister()
+    this.broadcastProfile()
   }
 
   async registerHandle(handle: string): Promise<string | null> {

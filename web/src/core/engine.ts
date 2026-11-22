@@ -27,6 +27,8 @@ export type AppKind =
   | 'location'
   | 'location-update'
   | 'settings'
+  | 'group-profile'
+  | 'group-leave'
 
 export interface Attachment {
   mime: string
@@ -112,6 +114,16 @@ export interface AppMessage {
   mentions?: string[]
   expire_s?: number
   settings?: { expire_s?: number }
+  // v1.2 profile (spec section 6).
+  profile?: ProfileWire
+  group_profile?: ProfileWire
+}
+
+/** `profile` and `group_profile` payloads: avatar is a base64 JPEG, null removes it. */
+export interface ProfileWire {
+  name?: string
+  avatar?: string | null
+  avatar_hash?: string
 }
 
 export interface Contact {

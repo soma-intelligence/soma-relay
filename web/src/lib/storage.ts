@@ -15,7 +15,7 @@ interface SealedRecord {
   ct: ArrayBuffer
 }
 
-const STORES = ['meta', 'conversations', 'messages', 'outbox', 'media'] as const
+const STORES = ['meta', 'conversations', 'messages', 'outbox', 'media', 'profiles'] as const
 type StoreName = (typeof STORES)[number]
 
 export class Storage {
@@ -27,13 +27,18 @@ export class Storage {
   static readonly dbName = `soma-relay-${PROFILE}`
 
   static async open(): Promise<Storage> {
-    const db = await openDB(Storage.dbName, 1, {
-      upgrade(db) {
-        db.createObjectStore('keys')
-        for (const s of STORES) {
-          const store = db.createObjectStore(s, { keyPath: 'id' })
-          if (s === 'messages') store.createIndex('conv', ['convId', 'ts'])
+    // v2 adds `profiles` (photos and names received from contacts and groups).
+    const db = await openDB(Storage.dbName, 2, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          db.createObjectStore('keys')
+          for (const s of STORES) {
+            if (s === 'profiles') continue
+            const store = db.createObjectStore(s, { keyPath: 'id' })
+            if (s === 'messages') store.createIndex('conv', ['convId', 'ts'])
+          }
         }
+        if (oldVersion < 2) db.createObjectStore('profiles', { keyPath: 'id' })
       },
     })
     let key = (await db.get('keys', 'seal')) as CryptoKey | undefined
