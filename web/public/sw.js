@@ -20,7 +20,7 @@ self.addEventListener('push', (event) => {
       return self.registration.showNotification('Soma Relay', {
         body: 'Nouveau message',
         tag: 'relay',
-        icon: 'icon.svg',
+        icon: 'icon-512.png',
         data: { url: self.registration.scope },
       })
     }),
