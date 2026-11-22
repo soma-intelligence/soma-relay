@@ -82,6 +82,7 @@ export interface Snapshot {
 }
 
 const INLINE_MAX = 48 * 1024
+const P2P_ACK_MS = 5000
 const RANK: Record<Status, number> = { failed: 0, pending: 1, sent: 2, delivered: 3, read: 4 }
 
 const BUS_PARAM = new URLSearchParams(location.search).get('bus')
@@ -181,6 +182,13 @@ export class Relay {
   private outbox: OutboxItem[] = []
   /** node envelope id -> our message id, to mark messages sent when the node confirms. */
   private inflight = new Map<string, string>()
+  /**
+   * Messages handed to a P2P data channel. A channel can still look open for a few seconds after
+   * the other tab closed or lost its network, and whatever goes in then is lost. Each one waits
+   * here for its delivery receipt; without one after P2P_ACK_MS it goes again through the node
+   * (the core drops the copy if the first one did arrive).
+   */
+  private p2pPending = new Map<string, { env: Uint8Array; fp: string; mailbox: string; convId?: string; at: number }>()
   private lastTypingSent = new Map<string, number>()
   private mediaUrls = new Map<string, string>()
   private mediaLoading = new Map<string, Promise<string | null>>()
@@ -237,6 +245,24 @@ export class Relay {
         if (d?.t === 'open' && typeof d.conv === 'string') void this.openConversation(d.conv)
       })
     setInterval(() => void this.sweepExpired(), 5000)
+    setInterval(() => this.retryP2p(), 1000)
+    // Close the data channels at once, so peers stop sending into them and use the node.
+    window.addEventListener('pagehide', () => this.p2p.closeAll())
+  }
+
+  /** Sends again through the node (or the outbox) what a P2P channel did not confirm. */
+  private retryP2p() {
+    const now = Date.now()
+    const stale = new Set<string>()
+    for (const [msgId, p] of this.p2pPending) {
+      if (now - p.at < P2P_ACK_MS) continue
+      this.p2pPending.delete(msgId)
+      stale.add(p.fp)
+      this.route(p.env, { mailbox: p.mailbox }, { msgId, convId: p.convId })
+    }
+    // A channel that swallowed a message without answering is dead: drop it, the next message
+    // reopens one if the peer is still there.
+    for (const fp of stale) this.p2p.close(fp, false)
   }
 
   // Store plumbing
@@ -456,9 +482,12 @@ export class Relay {
   private route(
     env: Uint8Array,
     target: { fp?: string; mailbox: string },
-    meta?: { msgId?: string; convId?: string; queue?: boolean },
+    meta?: { msgId?: string; convId?: string; queue?: boolean; ack?: boolean },
   ): Transport | null {
-    if (target.fp && this.p2p.send(target.fp, env)) return 'p2p'
+    if (target.fp && this.p2p.send(target.fp, env)) {
+      if (meta?.msgId && meta.ack) this.p2pPending.set(meta.msgId, { env, fp: target.fp, mailbox: target.mailbox, convId: meta.convId, at: Date.now() })
+      return 'p2p'
+    }
     if (this.node?.isReady) {
       const id = this.engine!.envelopeHeader(env)?.id
       if (id && meta?.msgId) this.inflight.set(id, meta.msgId)
@@ -887,6 +916,7 @@ export class Relay {
   }
 
   private async updateStatus(ids: string[], status: Status, transport?: Transport) {
+    if (status === 'delivered' || status === 'read') for (const id of ids) this.p2pPending.delete(id)
     const set = new Set(ids)
     const messages = { ...this.snap.messages }
     const changed: ChatMessage[] = []
@@ -939,7 +969,8 @@ export class Relay {
     if (!c) throw new Error('Contact introuvable.')
     const env = e.encryptFor(convId, msg)
     this.persist()
-    return this.route(env, { fp: convId, mailbox: c.mailbox }, { msgId: msg.id, convId, queue })
+    // Only bubbles get a delivery receipt, so only they can wait for one on the P2P path.
+    return this.route(env, { fp: convId, mailbox: c.mailbox }, { msgId: msg.id, convId, queue, ack: BUBBLE_KINDS.has(msg.kind) })
   }
 
   async sendText(
@@ -1889,7 +1920,9 @@ export class Relay {
           if (fp === me) return
           const mailbox = g.mailboxes?.[i] ?? this.snap.contacts.find((x) => x.fingerprint === fp)?.mailbox
           if (!mailbox) return
-          used = this.route(env, { fp, mailbox }, meta) ?? used
+          // Group messages get no receipts, so nothing would notice a dead P2P channel: use the
+          // node when it is up, P2P only when it is not.
+          used = this.route(env, { fp: this.node?.isReady ? undefined : fp, mailbox }, meta) ?? used
         })
       } else {
         const fp = this.snap.contacts.find((x) => x.mailbox === h.tag)?.fingerprint
