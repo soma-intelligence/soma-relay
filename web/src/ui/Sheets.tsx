@@ -26,7 +26,7 @@ export function AddContactSheet({ onClose, onAdded }: { onClose: () => void; onA
       setError(null)
       try {
         const c = await relay.addFromText(input)
-        relay.toast(`${c.name} ajouté. Vérifiez vos mots de sécurité.`)
+        relay.toast(`Contact ajouté : ${c.name}. Vérifiez vos mots de sécurité.`)
         onAdded(c.fingerprint)
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Ajout impossible.')
@@ -126,7 +126,7 @@ export function ContactSheet({ fp, onClose }: { fp: string; onClose: () => void 
         <Avatar id={fp} name={c.name} online={snap.online.has(c.mailbox)} size={64} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="mono" style={{ fontSize: 11, color: 'var(--muted)', overflowWrap: 'anywhere' }}>
-            {c.fingerprint.toUpperCase().match(/.{1,4}/g)?.join('·')}
+            {c.fingerprint.toUpperCase().match(/.{1,4}/g)?.join('·\u200b')}
           </div>
           {c.handle && (
             <div className="mono" style={{ fontSize: 12, marginTop: 4 }}>

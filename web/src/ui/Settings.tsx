@@ -51,7 +51,8 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
           <div className="set-row">
             <span className="lbl">
               Empreinte
-              <small className="mono">{me.fingerprint.toUpperCase().match(/.{1,4}/g)?.slice(0, 8).join('·')}</small>
+              <small className="mono">{/* A break may only follow a dot, so no line starts with one. */}
+                {me.fingerprint.toUpperCase().match(/.{1,4}/g)?.slice(0, 8).join('·\u200b')}</small>
             </span>
             <button className="btn" onClick={onMyCode}>
               Mon code

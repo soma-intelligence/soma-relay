@@ -835,7 +835,7 @@ final class AppModel {
             Task {
                 do {
                     let added = try await addContact(from: text)
-                    banner = added.name + " ajouté."
+                    banner = "Contact ajouté : " + added.name + "."
                 } catch {
                     banner = error.message
                 }

@@ -124,7 +124,7 @@ export function Welcome({ onDone }: { onDone: () => void }) {
             </span>
           ))}
         </div>
-        <p className="fp-grid">{me.fingerprint.toUpperCase().match(/.{1,4}/g)?.slice(0, 8).join('·')}</p>
+        <p className="fp-grid">{me.fingerprint.toUpperCase().match(/.{1,4}/g)?.slice(0, 8).join('·\u200b')}</p>
         <div className="row-btns">
           <button className="btn primary" onClick={onDone} data-autofocus>
             C’est parti

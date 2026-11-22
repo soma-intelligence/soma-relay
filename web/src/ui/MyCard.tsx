@@ -93,7 +93,7 @@ export function MyCard({ onClose, onAdded, startScan }: { onClose: () => void; o
       try {
         const c = await relay.addFromText(input)
         known.current.add(c.fingerprint)
-        relay.toast(`${c.name} ajouté. Vérifiez vos mots de sécurité.`)
+        relay.toast(`Contact ajouté : ${c.name}. Vérifiez vos mots de sécurité.`)
         onAdded(c.fingerprint)
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Ajout impossible.')

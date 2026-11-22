@@ -188,7 +188,7 @@ struct VerifyWordsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                Text("\(contact.name) est ajouté")
+                Text("Contact ajouté : \(contact.name)")
                     .font(.title2.bold())
                     .foregroundStyle(Theme.text)
                 Text("Lisez ces quatre mots ensemble, à voix haute ou en face. S'ils sont les mêmes chez vous deux, personne ne s'est glissé entre vous.")
