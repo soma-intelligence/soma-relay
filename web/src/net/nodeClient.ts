@@ -207,7 +207,7 @@ export class NodeClient {
 
   async iceServers(): Promise<RTCIceServer[]> {
     try {
-      const r = await fetch(this.url('/v1/ice'))
+      const r = await fetch(this.url('/v1/ice'), { cache: 'no-store' })
       if (!r.ok) return []
       const j = (await r.json()) as RTCIceServer[] | { iceServers?: RTCIceServer[] }
       return Array.isArray(j) ? j : (j.iceServers ?? [])

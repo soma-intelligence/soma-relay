@@ -195,7 +195,7 @@ export class Relay {
     this.calls = new CallManager(
       (fp, s) => this.sendSignal(fp, s),
       (fp, id) => this.engine!.callKey(fp, id),
-      () => this.ice(),
+      () => this.ice(true),
       (info) => void this.logCall(info),
     )
     document.addEventListener('visibilitychange', () => {
@@ -408,8 +408,9 @@ export class Relay {
     if (c && this.snap.online.has(c.mailbox) && !this.p2p.isOpen(conv)) void this.p2p.connect(conv)
   }
 
-  async ice(): Promise<RTCIceServer[]> {
-    if (this.iceCache && Date.now() - this.iceCache.at < 10 * 60_000) return this.iceCache.servers
+  /** ICE servers from the node. Calls pass `fresh` so short-lived TURN credentials are new. */
+  async ice(fresh = false): Promise<RTCIceServer[]> {
+    if (!fresh && this.iceCache && Date.now() - this.iceCache.at < 10 * 60_000) return this.iceCache.servers
     let servers = (await this.node?.iceServers()) ?? []
     if (!servers.length) servers = [{ urls: 'stun:stun.cloudflare.com:3478' }]
     this.iceCache = { at: Date.now(), servers }
