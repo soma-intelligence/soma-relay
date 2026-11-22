@@ -16,7 +16,7 @@ const JWT_LIFETIME: Duration = Duration::from_secs(50 * 60);
 
 /// The alert every APNs push carries. No content, no sender.
 pub fn payload() -> Value {
-    json!({"aps": {"alert": {"title": "Soma Relay", "body": "Nouveau message"}, "sound": "default", "mutable-content": 1}})
+    json!({"aps": {"alert": {"title": "Soma Relay", "body": "Nouveau message"}, "sound": "default", "mutable-content": 1, "content-available": 1}})
 }
 
 pub struct Apns {
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(
             payload(),
             serde_json::from_str::<Value>(
-                r#"{"aps":{"alert":{"title":"Soma Relay","body":"Nouveau message"},"sound":"default","mutable-content":1}}"#
+                r#"{"aps":{"alert":{"title":"Soma Relay","body":"Nouveau message"},"sound":"default","mutable-content":1,"content-available":1}}"#
             )
             .unwrap()
         );
