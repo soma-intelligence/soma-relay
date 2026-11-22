@@ -103,6 +103,20 @@ targets:
         SKIP_INSTALL: YES
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
         OTHER_LDFLAGS: -lc++
+  # Simulator step driver (UITests/RelayScriptUITests.swift), run by hand, not in CI.
+  SomaRelayUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: SomaRelay
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.somalabs.relay.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: SomaRelay
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
 schemes:
   SomaRelay:
     build:
@@ -110,5 +124,9 @@ schemes:
         SomaRelay: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - SomaRelayUITests
     archive:
       config: Release
