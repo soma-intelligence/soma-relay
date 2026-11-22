@@ -144,8 +144,9 @@ struct UnreadSeparator: View {
 /// Centred system line (timer changes).
 struct SystemLine: View {
     let text: String
+    var icon = "timer"
     var body: some View {
-        Label(text, systemImage: "timer")
+        Label(text, systemImage: icon)
             .font(.caption)
             .foregroundStyle(Theme.secondary)
             .multilineTextAlignment(.center)

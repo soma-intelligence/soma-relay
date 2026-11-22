@@ -15,9 +15,10 @@ struct Composer: View {
     @State private var text = ""
     @State private var recorder = VoiceRecorder()
     @State private var cancelDrag: CGFloat = 0
-    @State private var photoItem: PhotosPickerItem?
+    @State private var photoItems: [PhotosPickerItem] = []
     @State private var showPhotos = false
     @State private var showCamera = false
+    @State private var showVideo = false
     @State private var showFiles = false
     @State private var showAttach = false
     @State private var showPoll = false
@@ -35,6 +36,8 @@ struct Composer: View {
     }
 
     private var isChannel: Bool { conversationId.hasPrefix("c:") }
+    private static var hasCamera: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
+    private var showCameraButton: Bool { !hasText && editing == nil && !isChannel && (Self.hasCamera || model.demo) }
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
@@ -79,6 +82,22 @@ struct Composer: View {
                         }
                         .task(id: text) { await refreshPreview() }
                         .accessibilityLabel(editing != nil ? "Message modifié" : "Message")
+                    if showCameraButton {
+                        Button {
+                            Haptics.tap()
+                            focused = false
+                            showCamera = true
+                        } label: {
+                            Image(systemName: "camera")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundStyle(Theme.text)
+                                .frame(width: 40, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                        .accessibilityLabel("Caméra")
+                    }
                 }
                 trailingButton
             }
@@ -89,6 +108,7 @@ struct Composer: View {
         .animation(.snappy(duration: 0.25), value: preview)
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.32, bounce: 0.25), value: showAttach)
         .animation(.snappy(duration: 0.2), value: recorder.recording)
+        .animation(.snappy(duration: 0.2), value: showCameraButton)
         .onChange(of: editing?.id) { _, id in
             guard id != nil, let editing else { return }
             text = editing.message.text ?? ""
@@ -96,15 +116,33 @@ struct Composer: View {
         }
         .onChange(of: replyTo?.id) { _, id in if id != nil { focused = true } }
         .onChange(of: focused) { _, f in if f { showAttach = false } }
-        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .any(of: [.images, .videos]))
-        .onChange(of: photoItem) { _, item in
-            guard let item else { return }
-            photoItem = nil
-            Task { await sendPicked(item) }
+        .photosPicker(
+            isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 10, selectionBehavior: .ordered,
+            matching: .any(of: [.images, .videos]))
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            photoItems = []
+            Task {
+                // One message per picked item, in the order they were picked.
+                for item in items { await sendPicked(item) }
+            }
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { result in
+            CameraSendFlow(demoPreview: DemoData.screen == "camera-preview") { image, caption in
                 showCamera = false
+                Task {
+                    await sendCamera(.image(image))
+                    if !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        model.send(text: caption, in: conversationId)
+                    }
+                }
+            } onCancel: {
+                showCamera = false
+            }
+        }
+        .fullScreenCover(isPresented: $showVideo) {
+            CameraPicker(video: true) { result in
+                showVideo = false
                 Task { await sendCamera(result) }
             }
             .ignoresSafeArea()
@@ -128,6 +166,7 @@ struct Composer: View {
             case "attach": showAttach = true
             case "poll-new": showPoll = true
             case "location": showLocation = true
+            case "camera-preview": showCamera = true
             case "edit":
                 if let mine = model.items(in: conversationId).last(where: { model.canEdit($0) }) { editing = mine }
             default: break
@@ -171,6 +210,7 @@ struct Composer: View {
         [
             AttachOption(id: "photo", title: "Photo", icon: "photo.on.rectangle.angled", tint: Theme.net, mediaOnly: true),
             AttachOption(id: "camera", title: "Caméra", icon: "camera.fill", tint: Color(UIColor(hex: 0x5B636E, alpha: 1)), mediaOnly: true),
+            AttachOption(id: "video", title: "Vidéo", icon: "video.fill", tint: Color(UIColor(hex: 0xD6455D, alpha: 1)), mediaOnly: true),
             AttachOption(id: "document", title: "Document", icon: "doc.fill", tint: Color(UIColor(hex: 0x2B6CDF, alpha: 1)), mediaOnly: true),
             AttachOption(id: "location", title: "Position", icon: "location.fill", tint: Color(UIColor(hex: 0x1E9E5A, alpha: 1)), mediaOnly: false),
             AttachOption(id: "poll", title: "Sondage", icon: "chart.bar.fill", tint: Color(UIColor(hex: 0xE8772E, alpha: 1)), mediaOnly: false),
@@ -180,7 +220,9 @@ struct Composer: View {
     private var attachPanel: some View {
         VStack(spacing: 2) {
             ForEach(attachOptions) { option in
-                let disabled = (isChannel && option.mediaOnly) || (option.id == "camera" && !UIImagePickerController.isSourceTypeAvailable(.camera) && !model.demo)
+                let disabled = (isChannel && option.mediaOnly)
+                    || (option.id == "camera" && !Self.hasCamera && !model.demo)
+                    || (option.id == "video" && !Self.hasCamera)
                 Button {
                     pick(option.id)
                 } label: {
@@ -218,6 +260,7 @@ struct Composer: View {
         switch id {
         case "photo": showPhotos = true
         case "camera": showCamera = true
+        case "video": showVideo = true
         case "document": showFiles = true
         case "location": showLocation = true
         case "poll": showPoll = true
@@ -502,12 +545,14 @@ struct PickedMovie: Transferable {
 /// UIImagePickerController for photos and videos from the camera.
 struct CameraPicker: UIViewControllerRepresentable {
     enum Result { case image(UIImage), movie(URL) }
+    var video = false
     let done: (Result?) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
         picker.sourceType = .camera
-        picker.mediaTypes = [UTType.image.identifier, UTType.movie.identifier]
+        picker.mediaTypes = video ? [UTType.movie.identifier] : [UTType.image.identifier, UTType.movie.identifier]
+        if video { picker.cameraCaptureMode = .video }
         picker.videoQuality = .typeIFrame1280x720
         picker.videoMaximumDuration = 120
         picker.delegate = context.coordinator
@@ -532,5 +577,84 @@ struct CameraPicker: UIViewControllerRepresentable {
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { done(nil) }
+    }
+}
+
+/// Camera, then the shot full screen with an optional caption: Reprendre or Envoyer.
+struct CameraSendFlow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var demoPreview = false
+    let onSend: (UIImage, String) -> Void
+    let onCancel: () -> Void
+    @State private var shot: UIImage?
+    @State private var caption = ""
+    @FocusState private var captionFocused: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let shot {
+                preview(shot)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 1.04)))
+            } else {
+                CameraCaptureView { image in
+                    withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.15)) { shot = image }
+                } onCancel: {
+                    onCancel()
+                }
+                .transition(.opacity)
+            }
+        }
+        .onAppear { if demoPreview { shot = DemoData.cameraScene(); caption = "Vue depuis le stand 4" } }
+    }
+
+    private func preview(_ image: UIImage) -> some View {
+        ZStack {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .onTapGesture { captionFocused = false }
+                .accessibilityLabel("Photo prise")
+            VStack(spacing: 12) {
+                Spacer()
+                TextField("Ajouter une légende", text: $caption, axis: .vertical)
+                    .lineLimit(1...4)
+                    .focused($captionFocused)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .accessibilityLabel("Légende")
+                HStack(spacing: 12) {
+                    Button {
+                        Haptics.tap()
+                        caption = ""
+                        withAnimation(.smooth) { shot = nil }
+                    } label: {
+                        Label("Reprendre", systemImage: "arrow.counterclockwise")
+                            .font(.body.weight(.medium))
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 50)
+                    }
+                    .buttonStyle(.glass)
+                    Button {
+                        Haptics.success()
+                        onSend(image, caption)
+                    } label: {
+                        Label("Envoyer", systemImage: "arrow.up")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 50)
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .environment(\.colorScheme, .dark)
+        }
+        .statusBarHidden()
     }
 }

@@ -283,7 +283,7 @@ struct ChatView: View {
         case .unread(let n):
             UnreadSeparator(count: n).id("unread")
         case .system(let item):
-            SystemLine(text: model.systemText(item))
+            SystemLine(text: model.systemText(item), icon: item.message.kind == .settings ? "timer" : "person.3")
                 .id(item.id)
         case .message(let item, let position, let showSender):
             let row = MessageRow(
@@ -441,9 +441,8 @@ struct ChatView: View {
                 runSearch(keepIndex: false)
             case "search-chat":
                 searching = true
-                query = "le"
+                query = "midi"
                 runSearch(keepIndex: false)
-                if hits.count > 1 { step(-1) }
             case "group-detail":
                 showGroup = true
             case "reactions":
