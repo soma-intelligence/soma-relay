@@ -39,6 +39,12 @@ pub fn router(state: Arc<NodeState>) -> Router {
             "/v1/blobs/{sha}",
             get(get_blob).put(put_blob).layer(DefaultBodyLimit::disable()),
         )
+        .route(
+            "/v1/vault/{id}",
+            get(crate::vault::get_vault)
+                .put(crate::vault::put_vault)
+                .layer(DefaultBodyLimit::max(crate::store::MAX_VAULT_BYTES)),
+        )
         .route("/v1", get(not_found))
         .route("/v1/{*rest}", get(not_found).put(not_found).post(not_found))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
@@ -50,7 +56,7 @@ pub fn router(state: Arc<NodeState>) -> Router {
     api.fallback_service(spa)
 }
 
-fn api_error(status: StatusCode, code: &str, msg: &str) -> Response {
+pub(crate) fn api_error(status: StatusCode, code: &str, msg: &str) -> Response {
     (status, Json(json!({"error": code, "msg": msg}))).into_response()
 }
 

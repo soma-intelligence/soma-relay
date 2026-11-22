@@ -742,3 +742,156 @@ async fn link_preview() {
     assert_eq!(ask(format!("http://{svc}/evil")).await.status(), 403);
     assert_eq!(ask(format!("http://{svc}/json")).await.status(), 502);
 }
+
+/// Vault signature: `"relay-vault-v1" || vault_id (ASCII hex) || SHA-256(blob)`.
+fn vault_sig(c: &Client, id: &str, blob: &[u8]) -> String {
+    let mut m = b"relay-vault-v1".to_vec();
+    m.extend(id.as_bytes());
+    m.extend(Sha256::digest(blob));
+    c.sign(&m)
+}
+
+fn vault_id(n: u8) -> String {
+    hex::encode(Sha256::digest([n]))
+}
+
+#[tokio::test]
+async fn vault_roundtrip() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let (ka, ma) = Client::identity(21);
+    let (a, _) = Client::connect(&node, ka, ma).await;
+    let id = vault_id(1);
+    let blob = b"opaque vault bytes".to_vec();
+    let r = http
+        .put(node.http(&format!("/v1/vault/{id}")))
+        .header("X-Relay-Mailbox", hex::encode(ma))
+        .header("X-Relay-Sig", vault_sig(&a, &id, &blob))
+        .body(blob.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let r = http.get(node.http(&format!("/v1/vault/{id}"))).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap().to_vec(), blob);
+}
+
+#[tokio::test]
+async fn vault_bad_signature() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let (ka, ma) = Client::identity(22);
+    let (kb, _mb) = Client::identity(23);
+    let (a, _) = Client::connect(&node, ka, ma).await;
+    let id = vault_id(2);
+    let put = |sig: String, body: &'static [u8]| {
+        http.put(node.http(&format!("/v1/vault/{id}")))
+            .header("X-Relay-Mailbox", hex::encode(ma))
+            .header("X-Relay-Sig", sig)
+            .body(body)
+            .send()
+    };
+    // Signed by another key.
+    let other = Client { ws: Client::connect_raw(&node).await, key: kb };
+    let r = put(vault_sig(&other, &id, b"x"), b"x").await.unwrap();
+    assert_eq!(r.status(), 403);
+    assert_eq!(r.json::<Value>().await.unwrap()["error"], "bad_signature");
+    // Signature over a different blob.
+    let r = put(vault_sig(&a, &id, b"y"), b"x").await.unwrap();
+    assert_eq!(r.status(), 403);
+    // Signature for another vault id does not carry over.
+    let r = put(vault_sig(&a, &vault_id(99), b"x"), b"x").await.unwrap();
+    assert_eq!(r.status(), 403);
+}
+
+#[tokio::test]
+async fn vault_unknown_mailbox() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let (kz, mz) = Client::identity(24);
+    let zed = Client { ws: Client::connect_raw(&node).await, key: kz };
+    let id = vault_id(3);
+    let r = http
+        .put(node.http(&format!("/v1/vault/{id}")))
+        .header("X-Relay-Mailbox", hex::encode(mz))
+        .header("X-Relay-Sig", vault_sig(&zed, &id, b"x"))
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    assert_eq!(r.json::<Value>().await.unwrap()["error"], "unknown_mailbox");
+}
+
+#[tokio::test]
+async fn vault_other_owner() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let (ka, ma) = Client::identity(25);
+    let (kb, mb) = Client::identity(26);
+    let (a, _) = Client::connect(&node, ka, ma).await;
+    let (b, _) = Client::connect(&node, kb, mb).await;
+    let id = vault_id(4);
+    let put = |c: &Client, mailbox: [u8; 16], body: &'static [u8]| {
+        http.put(node.http(&format!("/v1/vault/{id}")))
+            .header("X-Relay-Mailbox", hex::encode(mailbox))
+            .header("X-Relay-Sig", vault_sig(c, &id, body))
+            .body(body)
+            .send()
+    };
+    assert_eq!(put(&a, ma, b"one").await.unwrap().status(), 200);
+    let r = put(&b, mb, b"two").await.unwrap();
+    assert_eq!(r.status(), 403);
+    assert_eq!(r.json::<Value>().await.unwrap()["error"], "not_owner");
+    assert_eq!(put(&a, ma, b"three").await.unwrap().status(), 200);
+    let r = http.get(node.http(&format!("/v1/vault/{id}"))).send().await.unwrap();
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"three");
+}
+
+#[tokio::test]
+async fn vault_too_large() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let (ka, ma) = Client::identity(27);
+    let (a, _) = Client::connect(&node, ka, ma).await;
+    let id = vault_id(5);
+    let big = vec![7u8; (1 << 20) + 1];
+    let r = http
+        .put(node.http(&format!("/v1/vault/{id}")))
+        .header("X-Relay-Mailbox", hex::encode(ma))
+        .header("X-Relay-Sig", vault_sig(&a, &id, &big))
+        .body(big)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 413);
+    // Exactly 1 MiB is fine.
+    let ok = vec![7u8; 1 << 20];
+    let r = http
+        .put(node.http(&format!("/v1/vault/{id}")))
+        .header("X-Relay-Mailbox", hex::encode(ma))
+        .header("X-Relay-Sig", vault_sig(&a, &id, &ok))
+        .body(ok)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn vault_missing() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let r = http.get(node.http(&format!("/v1/vault/{}", vault_id(6)))).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn vault_bad_id() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let r = http.get(node.http("/v1/vault/xyz")).send().await.unwrap();
+    assert_eq!(r.status(), 400);
+    assert_eq!(r.json::<Value>().await.unwrap()["error"], "bad_vault_id");
+}

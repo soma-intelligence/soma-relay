@@ -261,6 +261,33 @@ Responses:
 GET returns the card bytes with `X-Relay-Mailbox`, or `404`. As with `/v1/cards`, verify the
 card on the client.
 
+### `PUT /v1/vault/{id}` and `GET /v1/vault/{id}`
+
+Encrypted vault blobs for passkey backup. The node only stores opaque bytes; the client
+encrypts before upload. `{id}` is 64 lowercase hex characters (`400 bad_vault_id` otherwise).
+
+PUT body: the blob, at most 1 MiB (`413 too_large`). Headers:
+
+- `X-Relay-Mailbox: <hex16>`: the writing mailbox. It must have authenticated over `/v1/ws`
+  at least once.
+- `X-Relay-Sig: <b64 Ed25519 signature>`: signature by the key bound to that mailbox over
+
+  ```
+  "relay-vault-v1" || vault id (64 ASCII hex chars) || SHA-256(blob) (32 raw bytes)
+  ```
+
+The mailbox that first writes an id owns it. Only the owner can overwrite it.
+
+- `200`: written, `{"id","size"}`.
+- `403 unknown_mailbox`: the mailbox never authenticated on this node.
+- `403 bad_signature`: the signature does not verify for this id, blob and bound key.
+- `403 not_owner`: the id belongs to another mailbox.
+- `400 bad_vault_id`, `400 bad_mailbox`, `400 bad_signature` (missing or badly encoded header).
+
+GET returns the bytes (`application/octet-stream`, `no-store`), or `404 not_found`. Reads
+need no authentication, the blob is ciphertext and the id is unguessable. A vault is deleted
+400 days after its last write.
+
 ### `PUT /v1/blobs/{sha256}` and `GET /v1/blobs/{sha256}`
 
 Encrypted attachments (the client encrypts before upload, see the design spec section 5).

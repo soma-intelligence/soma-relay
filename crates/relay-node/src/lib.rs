@@ -12,6 +12,7 @@ pub mod ratelimit;
 pub mod store;
 pub mod turn;
 pub mod util;
+pub mod vault;
 pub mod verifier;
 pub mod ws;
 
@@ -280,6 +281,11 @@ impl NodeState {
                 }
             }
             Err(e) => tracing::error!("sweep failed: {e}"),
+        }
+        match self.store.sweep_vaults(now - store::VAULT_RETENTION_MS) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(vaults = n, "expired vaults removed"),
+            Err(e) => tracing::error!("vault sweep failed: {e}"),
         }
         self.http_limiter.prune();
         self.previewer.limiter.prune();

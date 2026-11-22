@@ -48,6 +48,18 @@ pub enum Claim {
     TooMany,
 }
 
+/// Outcome of a vault write.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PutVault {
+    Written,
+    OwnerMismatch,
+}
+
+/// Largest vault blob: 1 MiB.
+pub const MAX_VAULT_BYTES: usize = 1 << 20;
+/// A vault is kept this long after its last write: 400 days.
+pub const VAULT_RETENTION_MS: i64 = 400 * 86_400_000;
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -101,6 +113,13 @@ impl Store {
                  expires_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS blobs_expiry ON blobs (expires_at);
+             CREATE TABLE IF NOT EXISTS vault (
+                 id TEXT PRIMARY KEY,
+                 owner BLOB NOT NULL,
+                 blob BLOB NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS vault_updated ON vault (updated_at);
              CREATE TABLE IF NOT EXISTS push (
                  mailbox BLOB PRIMARY KEY,
                  kind TEXT NOT NULL,
@@ -332,6 +351,41 @@ impl Store {
             .optional()
     }
 
+    // Vaults.
+
+    /// Writes the vault `id` for `owner`. The first writer owns the id; others are refused.
+    pub fn put_vault(&self, id: &str, owner: &[u8; 16], blob: &[u8], now: i64) -> rusqlite::Result<PutVault> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        let existing: Option<Vec<u8>> =
+            tx.query_row("SELECT owner FROM vault WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        let out = match existing {
+            Some(o) if o != owner[..] => PutVault::OwnerMismatch,
+            Some(_) => {
+                tx.execute("UPDATE vault SET blob = ?2, updated_at = ?3 WHERE id = ?1", params![id, blob, now])?;
+                PutVault::Written
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO vault (id, owner, blob, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                    params![id, &owner[..], blob, now],
+                )?;
+                PutVault::Written
+            }
+        };
+        tx.commit()?;
+        Ok(out)
+    }
+
+    pub fn get_vault(&self, id: &str) -> rusqlite::Result<Option<Vec<u8>>> {
+        self.c().query_row("SELECT blob FROM vault WHERE id = ?1", [id], |r| r.get(0)).optional()
+    }
+
+    /// Deletes vaults last written before `older_than`. Returns how many were removed.
+    pub fn sweep_vaults(&self, older_than: i64) -> rusqlite::Result<usize> {
+        self.c().execute("DELETE FROM vault WHERE updated_at < ?1", [older_than])
+    }
+
     // Expiry.
 
     /// Deletes expired envelopes and blob rows. Returns the expired blob hashes so the caller
@@ -409,6 +463,20 @@ mod tests {
         s.set_push(&[1; 16], &reg, 1).unwrap();
         drop(s);
         assert_eq!(Store::open(&path).unwrap().get_push(&[1; 16]).unwrap(), Some(reg));
+    }
+
+    #[test]
+    fn store_sweeps_old_vaults() {
+        let s = Store::open_in_memory().unwrap();
+        let t = 1_000;
+        assert_eq!(s.put_vault("aa", &[1; 16], b"x", t).unwrap(), PutVault::Written);
+        assert_eq!(s.put_vault("aa", &[2; 16], b"y", t).unwrap(), PutVault::OwnerMismatch);
+        assert_eq!(s.get_vault("aa").unwrap(), Some(b"x".to_vec()));
+        // The caller passes `now - VAULT_RETENTION_MS`. At exactly the retention age it stays.
+        assert_eq!(s.sweep_vaults(t + VAULT_RETENTION_MS - VAULT_RETENTION_MS).unwrap(), 0);
+        // One ms past the retention it goes.
+        assert_eq!(s.sweep_vaults(t + 1).unwrap(), 1);
+        assert_eq!(s.get_vault("aa").unwrap(), None);
     }
 
     #[test]
