@@ -14,16 +14,17 @@ The project is inspired by [bitchat](https://github.com/permissionlesstech/bitch
 
 | | |
 |---|---|
+| Profile | A profile photo and name, shared end to end with your contacts and groups only |
 | Chat | 1:1 conversations, delivery and read receipts, replies, reactions, edit, delete for everyone, forward, typing state, search |
 | Media | Photos (longest side 2048 px, HEIC on iPhone, WebP or AVIF on the web), 720p video (HEVC or H.264), voice notes (AAC, Opus when both ends support it), any file up to 100 MiB on the Internet path |
-| Documents | PDF, Word, PowerPoint, Excel, Keynote, Pages and more open inside the app (QuickLook on iPhone; PDF, Word and spreadsheets in the browser) |
+| Documents | PDF, Word, PowerPoint, Excel, Keynote, Pages and more open inside the app (QuickLook on iPhone; PDF, Word, PowerPoint and spreadsheets in the browser) |
 | Location | Send a pin or share your live position for 15 minutes, 1 hour or 8 hours |
 | Polls | Single or multiple choice, live results, closed by their creator |
 | Link previews | Built by the sender, so the person reading never fetches anything |
 | Disappearing messages | 5 minutes to 1 week, per conversation |
 | Notifications | Grouped per conversation, reply from the notification, mute, previews on or off. Push wakes the app without carrying any content |
 | Calls | Audio and video calls, peer to peer, with an extra end-to-end encryption layer on every frame |
-| Groups | Private groups with a signed member log and @mentions |
+| Groups | Private groups with several people, a group photo, admins who add and remove members, a signed member log and @mentions |
 | Channels | Public channels for people nearby (a stand, a festival, a building), with an optional password |
 | Directory | Optional `name@node` handles so people can find you without a QR code |
 | Bots | A bot runtime with a REST API and a webhook |
@@ -90,7 +91,7 @@ scripts/        Build scripts for the Swift framework and the wasm package
 
 ## Try it in a browser
 
-Soma Labs runs a public test node: https://relay-node.graybay-20896372.westus2.azurecontainerapps.io. It keeps undelivered messages in memory only, so a restart drops them.
+Soma Labs runs a public test node: https://somarelay.westus2.cloudapp.azure.com. It keeps undelivered messages on disk for up to 14 days and runs a TURN server for calls.
 
 Every node serves the web client at `/`. Open it twice with two profiles to chat with yourself:
 
@@ -132,6 +133,9 @@ Settings (flags or environment variables):
 | `RELAY_APNS_KEY_ID` | | APNs key id |
 | `RELAY_APNS_TEAM_ID` | | Apple developer team id |
 | `RELAY_APNS_TOPIC` | | iOS app bundle id |
+| `RELAY_TURN_SECRET` | | coturn `static-auth-secret`. With `RELAY_TURN_URLS`, `/v1/ice` hands out TURN credentials valid for `RELAY_TURN_TTL` |
+| `RELAY_TURN_URLS` | | Comma separated `turn:` and `turns:` URLs |
+| `RELAY_TURN_TTL` | `86400` | Lifetime of TURN credentials, in seconds |
 
 Web Push needs no setup: the node creates its VAPID key in `<data dir>/vapid.pem` on first start. Back it up with the database, because a new key breaks every browser subscription.
 
@@ -181,7 +185,7 @@ The web end-to-end tests (`cd web && pnpm e2e`) start a local node and run two b
 - The iOS app needs you to tap Send for SMS. That is an Apple rule.
 - MultipeerConnectivity is the iOS mesh today. A raw Bluetooth LE transport (compatible across platforms) is planned.
 - Push notifications never carry content: they only wake the app, which then fetches and decrypts.
-- PowerPoint files open with QuickLook on iPhone; in the browser they are offered as a download.
+- The browser PowerPoint viewer draws text, pictures, shapes and tables. Charts, SmartArt and animations are skipped.
 - One device per identity for now. Multi-device is planned.
 - Payments are out of scope for v1.
 
