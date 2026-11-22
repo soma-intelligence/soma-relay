@@ -94,10 +94,10 @@ The current export writes `relaystate1:<base64 state>` in clear. It becomes `rel
 
 OnePass already provides passkeys (`ProvidesPasskeys`) but does not answer the PRF extension. iOS 18 passes PRF inputs to the provider in the registration and assertion requests and takes PRF outputs back in the credential.
 
-- Each passkey item gets a `prfSeed` (32 random bytes), stored and synced with the item like the private key.
-  - New passkeys get it at creation.
-  - Passkeys created before this change get it on the first PRF request, then sync. All devices then compute the same outputs.
-- Output for a salt `s`: `HMAC-SHA256(prfSeed, SHA-256("WebAuthn PRF" || 0x00 || s))`, the WebAuthn mapping of CTAP `hmac-secret`.
+- The PRF secret of a passkey is derived from its private key (the stored PKCS#8 bytes): `prf_secret = HKDF-SHA256(private_key, salt "", info "onepass webauthn prf v1", 32)`. Owner ruling: derived, not a stored random seed.
+  - No new field and no migration: passkeys created before this change answer PRF as they are.
+  - The private key already syncs with the item, so every device computes the same outputs.
+- Output for a salt `s`: `HMAC-SHA256(prf_secret, SHA-256("WebAuthn PRF" || 0x00 || s))`, the WebAuthn mapping of CTAP `hmac-secret` (the RP salt is hashed before it reaches `hmac-secret`).
 - Registration: report `prf.enabled = true`, and outputs when inputs are given.
 - Assertion: outputs for `first` and, when present, `second`. Per-credential inputs (`evalByCredential`) are honored.
 - This works for every relying party, not only Relay.
@@ -113,7 +113,7 @@ OnePass already provides passkeys (`ProvidesPasskeys`) but does not answer the P
 
 - Core vectors: HKDF derivations, blob seal/open, AAD mismatch rejected, size cap. Same vectors in Rust and Swift (and TypeScript for the web).
 - Node: PUT with a bad signature, an unknown mailbox, another owner's mailbox, an oversize blob; GET 404; retention sweep.
-- OnePass: PRF output against the WebAuthn and CTAP test vectors; lazy seed creation syncs; two salts in one assertion.
+- OnePass: PRF output against an independently computed vector; same output from a copy of the passkey (another device); two salts in one assertion.
 - Web e2e: Chrome virtual authenticator with PRF. Flow: create account, add passkey, send messages, new browser profile, restore, keep talking with the old contact.
 - iOS UI tests: lock screen covers content, relock after the delay, Face ID fallback path (simulator enrolled).
 - Device checks, owner: OnePass on the iPhone, restore on a second device, the AASA association.
