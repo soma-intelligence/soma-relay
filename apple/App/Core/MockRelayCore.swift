@@ -301,6 +301,9 @@ nonisolated final class MockRelayCore: RelayCoreAPI {
 
     func makeMeshRouter() -> MeshRouterAPI { SwiftMeshRouter() }
 
+    /// The test core has no vault: backup needs relay-core.
+    func signVault(id: String, blob: Data) -> Data? { nil }
+
     func envelopeTagHex(_ envelope: Data) -> String? { MockEnvelope(bytes: envelope)?.tag.hex }
     func envelopeKind(_ envelope: Data) -> String? {
         switch MockEnvelope(bytes: envelope)?.kind {

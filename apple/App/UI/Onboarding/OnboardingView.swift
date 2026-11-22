@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Name, identity creation (post-quantum keys), then the QR card. Or a `.relaykey` restore.
+/// Name, identity creation (post-quantum keys), the passkey step (skippable), then the QR card.
+/// Or a `.relaykey` restore.
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @State private var step = Step.welcome
@@ -12,8 +13,10 @@ struct OnboardingView: View {
     @State private var restoring = false
     @State private var restoreError: String?
     @FocusState private var passphraseFocused: Bool
+    @State private var protecting = false
+    @State private var passkeyError: String?
 
-    enum Step: Int { case welcome, name, creating, card, restore }
+    enum Step: Int { case welcome, name, creating, passkey, card, restore }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,6 +24,7 @@ struct OnboardingView: View {
             case .welcome: welcome
             case .name: nameStep
             case .creating: creating
+            case .passkey: passkeyStep
             case .card: card
             case .restore: restoreStep
             }
@@ -28,7 +32,7 @@ struct OnboardingView: View {
         .padding(.horizontal, 24)
         .animation(.smooth(duration: 0.35), value: step)
         .onAppear {
-            if DemoData.screen == "onboarding-card" { name = "Quentin"; create() }
+            if DemoData.screen == "onboarding-card" { name = "Quentin"; create(offerPasskey: false) }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
@@ -258,7 +262,9 @@ struct OnboardingView: View {
         }
     }
 
-    private func create() {
+    private func create() { create(offerPasskey: true) }
+
+    private func create(offerPasskey: Bool) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         nameFocused = false
@@ -270,7 +276,57 @@ struct OnboardingView: View {
             let wait = max(0, 1.4 - Date().timeIntervalSince(started))
             try? await Task.sleep(for: .seconds(wait))
             Haptics.success()
-            step = .card
+            step = offerPasskey && model.vaultCanSeal ? .passkey : .card
+        }
+    }
+
+    /// After the keys: one passkey locks Relay and encrypts the backup on the node. Skippable.
+    private var passkeyStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Spacer().frame(height: 40)
+            Image(systemName: "person.badge.key.fill")
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(Theme.mesh)
+                .accessibilityHidden(true)
+            Text("Protéger avec un passkey")
+                .font(.largeTitle.bold())
+                .foregroundStyle(Theme.text)
+            Text("Ton passkey verrouille Relay et chiffre une sauvegarde de ton identité sur le nœud. Le nœud ne peut pas la lire. Sur un nouveau téléphone, ce même passkey la restaure.")
+                .foregroundStyle(Theme.secondary)
+            if let passkeyError {
+                Text(passkeyError)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.danger)
+            }
+            Spacer()
+            primary(protecting ? "Création…" : "Créer un passkey", disabled: protecting, action: protect)
+            Button("Plus tard") {
+                passkeyError = nil
+                step = .card
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .disabled(protecting)
+            .padding(.bottom, 12)
+        }
+        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
+    }
+
+    private func protect() {
+        guard !protecting else { return }
+        protecting = true
+        passkeyError = nil
+        Task {
+            defer { protecting = false }
+            do {
+                _ = try await model.vault.setUp(userName: model.passkeyUserName)
+                // The person chose the passkey: the lock goes on through it.
+                _ = await model.lock.enable()
+                Haptics.success()
+                step = .card
+            } catch {
+                Haptics.warning()
+                passkeyError = VaultSync.message(setup: error)
+            }
         }
     }
 }

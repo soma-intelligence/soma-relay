@@ -127,6 +127,8 @@ nonisolated final class FFIRelayCore: RelayCoreAPI {
         return (entry.card, entry.sig)
     }
 
+    func signVault(id: String, blob: Data) -> Data? { engine.signVault(id: id, blob: blob) }
+
     func makeMeshRouter() -> MeshRouterAPI { FFIMeshRouter() }
 }
 

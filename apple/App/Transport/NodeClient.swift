@@ -249,6 +249,45 @@ final class NodeClient {
         }
     }
 
+    // MARK: Vault (passkey backup, spec section 3)
+
+    /// `PUT /v1/vault/{id}`: body = the sealed blob, `X-Relay-Mailbox` = mailbox hex,
+    /// `X-Relay-Sig` = base64url of the Ed25519 signature over `vault_sig_message(id, blob)`.
+    func putVault(id: String, blob: Data, mailbox: String, signature: Data) async throws(VaultPutError) {
+        var request = URLRequest(url: http("v1/vault/\(id)"))
+        request.httpMethod = "PUT"
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(mailbox, forHTTPHeaderField: "X-Relay-Mailbox")
+        request.setValue(signature.base64url, forHTTPHeaderField: "X-Relay-Sig")
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.upload(for: request, from: blob) } catch { throw .network }
+        guard let code = (response as? HTTPURLResponse)?.statusCode else { throw .network }
+        if (200..<300).contains(code) { return }
+        if code == 429 || code >= 500 { throw .unavailable }
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        throw .refused(code: obj?["error"] as? String ?? "http_\(code)")
+    }
+
+    /// `GET /v1/vault/{id}`: the blob, or nil when the node has none (404).
+    func getVault(id: String) async throws -> Data? {
+        let (data, response) = try await session.data(from: http("v1/vault/\(id)"))
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: return data
+        case 404: return nil
+        default: throw URLError(.badServerResponse)
+        }
+    }
+
+    nonisolated enum VaultPutError: Error, Equatable {
+        /// No answer from the node.
+        case network
+        /// Rate limited or a server error: try again later.
+        case unavailable
+        /// The node said no: `unknown_mailbox`, `not_owner`, `bad_signature`, `too_large`...
+        case refused(code: String)
+    }
+
     func uploadBlob(_ data: Data, sha: String) async throws -> String {
         let url = http("v1/blobs/\(sha)")
         var request = URLRequest(url: url)

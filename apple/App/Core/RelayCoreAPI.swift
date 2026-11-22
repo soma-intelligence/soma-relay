@@ -106,6 +106,10 @@ nonisolated protocol RelayCoreAPI: AnyObject {
     /// `PUT /v1/directory/{handle}`.
     func signDirectoryEntry(handle: String) throws(RelayCoreError) -> (card: String, sig: Data)
 
+    /// Ed25519 signature by the device key (the one bound to the mailbox on the node) over
+    /// "relay-vault-v1" || id || SHA-256(blob), for `PUT /v1/vault/{id}`. Nil without the Rust core.
+    func signVault(id: String, blob: Data) -> Data?
+
     /// A fresh mesh router (one per app run).
     func makeMeshRouter() -> MeshRouterAPI
 

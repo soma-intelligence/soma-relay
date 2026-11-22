@@ -32,6 +32,8 @@ extension AppModel {
             if Date().timeIntervalSince(quietSince) > 2 { break }
         }
         saveNow()
+        // Saves made in a background window go to the vault before iOS suspends us.
+        await vault.flush()
         return lastNodeEnvelope > before
     }
 
@@ -40,10 +42,12 @@ extension AppModel {
         if nodeEnabled, !node.isReady, !demo { node.connect() }
         runExpiry()
         if let active = activeConversation { markRead(active) }
+        vault.retryIfOwed()
     }
 
     func didEnterBackground() {
         saveNow()
+        vault.flushInBackground()
         AppDelegate.scheduleRefresh()
     }
 }

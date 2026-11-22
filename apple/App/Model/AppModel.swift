@@ -13,6 +13,8 @@ final class AppModel {
     var phase: Phase = .loading
     /// Lock screen gate (passkey, then Face ID or the passcode).
     let lock = LockController()
+    /// Passkey backup of the engine state to the node vault.
+    let vault = VaultSync()
     private(set) var core: RelayCoreAPI?
     let db: AppDatabase
 
@@ -111,6 +113,7 @@ final class AppModel {
         node.delegate = self
         mesh.delegate = self
         calls = CallManager(model: self)
+        vault.model = self
     }
 
     var displayName: String { core?.displayName() ?? "" }
@@ -195,6 +198,7 @@ final class AppModel {
     func saveNow() {
         guard let core, !demo else { return }
         db.setValue(core.exportState(), for: "engine")
+        vault.markDirty()
     }
 
     func reloadContacts() {
@@ -841,6 +845,7 @@ final class AppModel {
         MediaStore.wipe()
         Notifier.shared.clearAll()
         SecretBox.destroyKey()
+        vault.reset()
         lock.reset()
         for key in ["handle", "channels", "nodeURL"] { UserDefaults.standard.removeObject(forKey: key) }
         core = nil
@@ -938,6 +943,8 @@ extension AppModel: NodeClientDelegate {
         if node.isReady {
             flushOutbox(toNode: true, toMesh: false)
             node.queryPresence(contacts.map(\.mailbox))
+            // The mailbox is bound now: a vault upload refused with unknown_mailbox can go.
+            vault.retryIfOwed()
         }
     }
 

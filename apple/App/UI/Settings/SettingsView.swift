@@ -145,6 +145,7 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    VaultRow()
                     Button("Exporter mon identité", systemImage: "square.and.arrow.up") {
                         exportURL = nil
                         showExport = true
@@ -157,7 +158,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Sauvegarde")
                 } footer: {
-                    Text("Le fichier contient ta clé privée, chiffrée par une phrase de passe. Garde-le dans un endroit sûr, jamais dans une conversation.")
+                    Text("Le passkey chiffre une copie de ton identité sur le nœud, qui ne peut pas la lire. Le fichier contient ta clé privée, chiffrée par une phrase de passe. Garde-le dans un endroit sûr, jamais dans une conversation.")
                 }
                 Section {
                     Button("Effacement d'urgence", systemImage: "flame", role: .destructive) { confirmWipe = true }
@@ -237,6 +238,64 @@ struct SettingsView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? ""
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
+    }
+}
+
+/// "Protéger avec un passkey": sets up the backup, then shows where it stands. Pending or failed:
+/// a tap tries the upload again.
+private struct VaultRow: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let vault = model.vault
+        switch vault.status {
+        case .off:
+            Button {
+                Task {
+                    do {
+                        _ = try await vault.setUp(userName: model.passkeyUserName)
+                        Haptics.success()
+                    } catch {
+                        Haptics.warning()
+                        model.banner = VaultSync.message(setup: error)
+                    }
+                }
+            } label: {
+                HStack {
+                    Label("Protéger avec un passkey", systemImage: "person.badge.key")
+                    if vault.busy { Spacer(); ProgressView() }
+                }
+            }
+            .disabled(vault.busy || !model.vaultCanSeal)
+            .accessibilityIdentifier("vault.status")
+        case .pending, .failed:
+            Button {
+                Task { await vault.flush() }
+            } label: {
+                status(vault)
+            }
+            .accessibilityHint("Réessaie la sauvegarde")
+            .accessibilityIdentifier("vault.status")
+        case .saved, .lockOnly:
+            status(vault)
+                .accessibilityIdentifier("vault.status")
+        }
+    }
+
+    private func status(_ vault: VaultSync) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label("Protéger avec un passkey", systemImage: "person.badge.key")
+                .foregroundStyle(Theme.text)
+            Text(vault.statusText)
+                .font(.footnote)
+                .foregroundStyle(isFailure(vault.status) ? Theme.danger : Theme.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func isFailure(_ status: VaultSync.VaultStatus) -> Bool {
+        if case .failed = status { return true }
+        return false
     }
 }
 
