@@ -12,6 +12,8 @@ You do not give us a name, phone number or email address. Your identity is a key
 
 Messages, photos, voice notes, videos, files and calls are end-to-end encrypted on your device before they leave it. Nobody else can read them, including Soma Labs and the operators of any relay node.
 
+If you set a profile photo, it is sent only to your contacts and to the groups you are in, end-to-end encrypted like a message. The node never sees it.
+
 Your conversations, contacts and media are stored only on your device, in an encrypted local database. Deleting the app deletes them. We have no copy.
 
 ## What a relay node sees
