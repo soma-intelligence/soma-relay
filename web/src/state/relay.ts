@@ -789,7 +789,7 @@ export class Relay {
     const title = previews ? this.titleOf(convId) : 'Soma Relay'
     const body = previews ? this.notifyBody(convId, m) : 'Nouveau message'
     const face = previews ? (this.avatarUrl(convId.startsWith('g:') ? convId : m.from) ?? this.avatarUrl(convId)) : undefined
-    const opts: NotificationOptions = { body, tag: convId, icon: face ?? '/icon.svg', data: { conv: convId, url: location.href } }
+    const opts: NotificationOptions = { body, tag: convId, icon: face ?? '/icon-512.png', data: { conv: convId, url: location.href } }
     const fallback = () => {
       try {
         const n = new Notification(title, opts)
