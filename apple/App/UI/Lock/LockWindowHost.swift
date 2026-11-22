@@ -39,6 +39,7 @@ final class LockWindowAnchor: UIView {
     private let state = LockWindowState()
     private var lockWindow: UIWindow?
     private var visible = false
+    private var fading = false
 
     init(lock: LockController) {
         self.lock = lock
@@ -60,6 +61,7 @@ final class LockWindowAnchor: UIView {
     }
 
     func tearDown() {
+        window?.accessibilityElementsHidden = false
         lockWindow?.isHidden = true
         lockWindow = nil
     }
@@ -69,21 +71,33 @@ final class LockWindowAnchor: UIView {
             guard let scene = window?.windowScene else { return }
             let lockWindow = self.lockWindow ?? makeWindow(scene: scene)
             self.lockWindow = lockWindow
+            // VoiceOver must not reach the app window (sheets, CallView, banners) under the lock.
+            window?.accessibilityElementsHidden = true
+            if fading {
+                // Backgrounded or relocked during the hide fade: stop it, the cover is opaque again
+                // before the app switcher snapshot.
+                lockWindow.layer.removeAllAnimations()
+                lockWindow.alpha = 1
+                return
+            }
             guard lockWindow.isHidden else { return }
             // Shown at once (no fade): the app switcher snapshot is taken right after backgrounding.
             lockWindow.alpha = 1
             // The keyboard window sits above `.alert + 1`; close it so typed text is not left in view.
             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             lockWindow.makeKeyAndVisible()
-        } else if let lockWindow, !lockWindow.isHidden {
+        } else if let lockWindow, !lockWindow.isHidden, !fading {
             let appWindow = window
+            fading = true
             UIView.animate(withDuration: 0.25, animations: { lockWindow.alpha = 0 }) { _ in
-                // A new lock may have been asked for during the fade.
+                self.fading = false
+                // A new lock or a cover may have been asked for during the fade.
                 guard !self.visible else {
                     lockWindow.alpha = 1
                     return
                 }
                 lockWindow.isHidden = true
+                appWindow?.accessibilityElementsHidden = false
                 appWindow?.makeKey()
             }
         }
@@ -94,6 +108,7 @@ final class LockWindowAnchor: UIView {
         lockWindow.windowLevel = .alert + 1
         let host = UIHostingController(rootView: LockWindowRoot(lock: lock, state: state))
         host.view.backgroundColor = .clear
+        host.view.accessibilityViewIsModal = true
         lockWindow.rootViewController = host
         lockWindow.isHidden = true
         return lockWindow

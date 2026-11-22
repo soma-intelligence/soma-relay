@@ -153,8 +153,13 @@ final class LockUITests: XCTestCase {
         relock()
         XCTAssertTrue(unlockButton.isHittable)
         XCTAssertFalse(cancel.isHittable, "the sheet must be under the lock")
+        // Not even in the accessibility tree (VoiceOver cannot reach it).
+        XCTAssertFalse(cancel.exists, "the sheet must be hidden from accessibility while locked")
+        XCTAssertFalse(app.textFields.matching(NSPredicate(format: "label == 'Phrase de passe'")).firstMatch.exists
+            || app.secureTextFields["Phrase de passe"].exists)
         unlockButton.tap()
         XCTAssertTrue(waitGone(lockScreen))
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5), "the sheet is back in the accessibility tree")
         XCTAssertTrue(cancel.isHittable, "the sheet is still there after the unlock")
     }
 
