@@ -118,15 +118,18 @@ extension AppModel {
         "\(displayName)|\(photoHash(Self.me) ?? "-")"
     }
 
-    /// Sends my profile to every contact and every group it has not reached yet.
+    /// Sends my profile to every contact with a 1:1 conversation and every group it has not
+    /// reached yet.
     func broadcastProfile() {
         guard !demo, core != nil else { return }
         for contact in contacts { sendProfileIfNeeded(toContact: contact.fingerprint) }
         for group in groups { sendProfileIfNeeded(toGroup: group.id) }
     }
 
+    /// Only to a contact I have a 1:1 conversation with: a profile never opens a session on its
+    /// own (spec section 6).
     func sendProfileIfNeeded(toContact fp: String) {
-        guard !demo, core != nil, contact(fp) != nil else { return }
+        guard !demo, core != nil, contact(fp) != nil, db.conversation(Self.directId(fp)) != nil else { return }
         let key = "sentProfile:" + Self.directId(fp)
         let signature = profileSignature
         guard db.value(for: key).flatMap({ String(data: $0, encoding: .utf8) }) != signature else { return }
@@ -136,14 +139,24 @@ extension AppModel {
         db.setValue(Data(signature.utf8), for: key)
     }
 
+    /// Once per profile change, and once more whenever someone joined since the last send, so a
+    /// new member gets my photo too (spec section 6).
     func sendProfileIfNeeded(toGroup gid: String) {
-        guard !demo, core != nil, groups.contains(where: { $0.id == gid }) else { return }
+        guard !demo, core != nil, let group = group(gid) else { return }
         let key = "sentProfile:" + Self.groupId(gid)
+        let membersKey = "sentProfileMembers:" + Self.groupId(gid)
         let signature = profileSignature
-        guard db.value(for: key).flatMap({ String(data: $0, encoding: .utf8) }) != signature else { return }
+        let sentTo = Set(
+            (db.value(for: membersKey).flatMap { String(data: $0, encoding: .utf8) } ?? "")
+                .split(separator: ",").map(String.init))
+        let sameProfile = db.value(for: key).flatMap({ String(data: $0, encoding: .utf8) }) == signature
+        guard !sameProfile || !Set(group.members).isSubset(of: sentTo) else { return }
         var message = AppMessage.make(.profile)
         message.profile = myProfile()
-        if sendGroupControl(message, to: gid) { db.setValue(Data(signature.utf8), for: key) }
+        if sendGroupControl(message, to: gid) {
+            db.setValue(Data(signature.utf8), for: key)
+            db.setValue(Data(group.members.sorted().joined(separator: ",").utf8), for: membersKey)
+        }
     }
 
     // MARK: Receiving profiles
@@ -267,10 +280,14 @@ extension AppModel {
             storeSystem("added-me", in: id, from: inbound.from)
             reloadConversations()
             sendProfileIfNeeded(toGroup: op.id)
-        } else if var c = db.conversation(id), groupNames[op.id] == nil, let name = op.name, c.title != name {
-            c.title = name
-            db.save(c)
-            reloadConversations()
+        } else {
+            if var c = db.conversation(id), groupNames[op.id] == nil, let name = op.name, c.title != name {
+                c.title = name
+                db.save(c)
+                reloadConversations()
+            }
+            // Someone joined: my profile goes in once more for them.
+            sendProfileIfNeeded(toGroup: op.id)
         }
         messageVersion += 1
     }
@@ -379,7 +396,10 @@ extension AppModel {
         for fp in added { storeSystem("add:" + fp, in: Self.groupId(gid), from: nil) }
         guard !added.isEmpty else { return }
         Haptics.success()
-        if !demo { resendGroupProfile(gid) }
+        if !demo {
+            resendGroupProfile(gid)
+            sendProfileIfNeeded(toGroup: gid)
+        }
     }
 
     /// Admin: removes a member (`group_remove` returns the op for the removed member, then the new
@@ -413,6 +433,7 @@ extension AppModel {
         storePhoto(nil, owner: Self.groupPhotoKey(gid))
         db.setValue(nil, for: "gname:" + gid)
         db.setValue(nil, for: "sentProfile:" + Self.groupId(gid))
+        db.setValue(nil, for: "sentProfileMembers:" + Self.groupId(gid))
         groupNames[gid] = nil
         if demo { groups.removeAll { $0.id == gid } } else { reloadContacts() }
         deleteConversation(Self.groupId(gid))
