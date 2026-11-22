@@ -422,6 +422,28 @@ async fn misc_http() {
 }
 
 #[tokio::test]
+async fn aasa_served() {
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let r = http.get(node.http("/.well-known/apple-app-site-association")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "application/json");
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v, serde_json::json!({"webcredentials": {"apps": ["M968YV4J8W.me.somalabs.relay"]}}));
+
+    let node = Node::start_with(|c| c.aasa_app_id = "TEAM1.org.example.app".into()).await;
+    let v: Value = http
+        .get(node.http("/.well-known/apple-app-site-association"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["webcredentials"]["apps"][0], "TEAM1.org.example.app");
+}
+
+#[tokio::test]
 async fn ice_turn_credentials() {
     // Unset: the STUN list only.
     let node = Node::start().await;

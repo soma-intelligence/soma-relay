@@ -29,6 +29,7 @@ use crate::{MAX_BLOB_BYTES, NodeState, RETENTION_MS, ws};
 pub fn router(state: Arc<NodeState>) -> Router {
     let api = Router::new()
         .route("/healthz", get(healthz))
+        .route("/.well-known/apple-app-site-association", get(aasa))
         .route("/v1/ws", get(ws::upgrade))
         .route("/v1/ice", get(ice))
         .route("/v1/push/vapid", get(vapid))
@@ -54,6 +55,12 @@ pub fn router(state: Arc<NodeState>) -> Router {
     let web = &state.config.web_dir;
     let spa = ServeDir::new(web).fallback(ServeFile::new(web.join("index.html")));
     api.fallback_service(spa)
+}
+
+/// Apple app site association: lets the iOS app use passkeys (webcredentials) for this domain.
+async fn aasa(State(state): State<Arc<NodeState>>) -> Response {
+    let body = json!({"webcredentials": {"apps": [state.config.aasa_app_id]}});
+    ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
 pub(crate) fn api_error(status: StatusCode, code: &str, msg: &str) -> Response {

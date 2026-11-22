@@ -117,6 +117,11 @@ pub struct Config {
     #[arg(long, env = "RELAY_APNS_TOPIC")]
     pub apns_topic: Option<String>,
 
+    /// App id (team id plus bundle id) listed in `/.well-known/apple-app-site-association`
+    /// under `webcredentials`, so the iOS app can use passkeys for this node's domain.
+    #[arg(long, env = "RELAY_AASA_APP_ID", default_value = "M968YV4J8W.me.somalabs.relay")]
+    pub aasa_app_id: String,
+
     /// Serve link previews at `/v1/preview`.
     #[arg(long, env = "RELAY_PREVIEW", default_value_t = true, action = clap::ArgAction::Set)]
     pub preview: bool,
@@ -141,6 +146,7 @@ impl Config {
             apns_key_id: None,
             apns_team_id: None,
             apns_topic: None,
+            aasa_app_id: "M968YV4J8W.me.somalabs.relay".into(),
             preview: true,
         }
     }
