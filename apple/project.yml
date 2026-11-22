@@ -71,9 +71,9 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - me.somalabs.relay.refresh
         NSLocationWhenInUseUsageDescription: Soma Relay utilise ta position seulement quand tu choisis de l'envoyer ou de la partager en direct dans une conversation.
-        NSCameraUsageDescription: Soma Relay utilise la caméra pour scanner le QR d'un contact, prendre des photos et passer des appels vidéo.
+        NSCameraUsageDescription: Soma Relay utilise la caméra pour scanner le QR d'un contact, prendre des photos à envoyer ou ta photo de profil, et passer des appels vidéo.
         NSMicrophoneUsageDescription: Soma Relay utilise le micro pour les notes vocales et les appels.
-        NSPhotoLibraryUsageDescription: Soma Relay accède à tes photos seulement quand tu choisis d'en envoyer une.
+        NSPhotoLibraryUsageDescription: Soma Relay accède à tes photos seulement quand tu choisis d'en envoyer une ou d'en faire ta photo de profil ou celle d'un groupe.
         NSPhotoLibraryAddUsageDescription: Soma Relay enregistre dans tes photos les images que tu choisis de garder.
         NSBluetoothAlwaysUsageDescription: Soma Relay utilise le Bluetooth pour faire passer tes messages de téléphone en téléphone, même sans réseau.
         NSLocalNetworkUsageDescription: Soma Relay cherche les téléphones proches pour faire passer tes messages chiffrés sans Internet.
