@@ -3,7 +3,8 @@
 
 use js_sys::{Object, Reflect, Uint8Array};
 use relay_wasm::{
-    WasmRelayEngine, open_vault, prf_salt_backup, prf_salt_unlock, seal_vault, unlock_check, vault_id, vault_key,
+    WasmRelayEngine, open_export, open_vault, prf_salt_backup, prf_salt_unlock, seal_export, seal_vault, unlock_check,
+    vault_id, vault_key,
 };
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -26,7 +27,7 @@ fn vault_roundtrip_wasm() {
     let id = vault_id(b"credential");
     let engine = WasmRelayEngine::create("web".into());
     let plain = Object::new();
-    set(&plain, "v", &JsValue::from(1));
+    set(&plain, "v", &JsValue::from(9)); // ignored: sealVault writes the current version
     set(&plain, "engine", &Uint8Array::from(engine.export_state().as_slice()));
     set(&plain, "handle", &JsValue::from("alice"));
     set(&plain, "nodeUrl", &JsValue::NULL);
@@ -41,4 +42,14 @@ fn vault_roundtrip_wasm() {
     let e = open_vault(&key, vault_id(b"other"), &blob).unwrap_err();
     assert_eq!(e.dyn_into::<js_sys::Error>().unwrap().name(), "Decrypt");
     assert_eq!(engine.sign_vault(id, &blob).len(), 64);
+}
+
+#[wasm_bindgen_test]
+fn export_roundtrip_wasm() {
+    let state = WasmRelayEngine::create("web".into()).export_state();
+    let text = seal_export("une phrase de passe", &state);
+    assert!(text.starts_with("relaystate2:"));
+    assert_eq!(open_export(Some("une phrase de passe".into()), &text).unwrap(), state);
+    let e = open_export(None, &text).unwrap_err();
+    assert_eq!(e.dyn_into::<js_sys::Error>().unwrap().name(), "Passphrase");
 }

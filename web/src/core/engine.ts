@@ -260,4 +260,14 @@ export interface EngineFactory {
   readonly kind: 'wasm' | 'mock'
   create(displayName: string): Engine
   restore(state: Uint8Array): Engine
+  /**
+   * `.relaykey` text: `relaystate2:` + the state sealed with a passphrase (Argon2id 64 MiB, then
+   * AES-256-GCM). relay-core only: absent in the mock, which keeps the clear JSON backup.
+   */
+  sealExport?(passphrase: string, state: Uint8Array): string
+  /**
+   * State from a `.relaykey` text (`relaystate1:` clear, `relaystate2:` with the passphrase).
+   * Throws an `Error` named `Passphrase` (missing or wrong) or `BadMagic` (not an export).
+   */
+  openExport?(passphrase: string | null, text: string): Uint8Array
 }

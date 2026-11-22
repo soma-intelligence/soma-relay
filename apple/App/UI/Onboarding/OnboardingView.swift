@@ -1,13 +1,19 @@
 import SwiftUI
 
-/// Name, identity creation (post-quantum keys), then the QR card.
+/// Name, identity creation (post-quantum keys), then the QR card. Or a `.relaykey` restore.
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @State private var step = Step.welcome
     @State private var name = ""
     @FocusState private var nameFocused: Bool
+    @State private var showImporter = false
+    @State private var importText = ""
+    @State private var passphrase = ""
+    @State private var restoring = false
+    @State private var restoreError: String?
+    @FocusState private var passphraseFocused: Bool
 
-    enum Step: Int { case welcome, name, creating, card }
+    enum Step: Int { case welcome, name, creating, card, restore }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,12 +22,17 @@ struct OnboardingView: View {
             case .name: nameStep
             case .creating: creating
             case .card: card
+            case .restore: restoreStep
             }
         }
         .padding(.horizontal, 24)
         .animation(.smooth(duration: 0.35), value: step)
         .onAppear {
             if DemoData.screen == "onboarding-card" { name = "Quentin"; create() }
+        }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item]) { result in
+            guard case .success(let url) = result else { return }
+            pickedFile(url)
         }
     }
 
@@ -44,6 +55,19 @@ struct OnboardingView: View {
             .padding(.top, 12)
             Spacer()
             primary("Commencer") { step = .name }
+            if let restoreError, step == .welcome {
+                Text(restoreError)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.danger)
+                    .multilineTextAlignment(.center)
+            }
+            Button("Restaurer une identité") {
+                restoreError = nil
+                showImporter = true
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(minHeight: 44)
+            .disabled(restoring)
             Text("Code ouvert sous licence AGPL.")
                 .font(.footnote)
                 .foregroundStyle(Theme.secondary)
@@ -152,6 +176,86 @@ struct OnboardingView: View {
         .buttonStyle(.glassProminent)
         .controlSize(.large)
         .disabled(disabled)
+    }
+
+    /// Shown only for a `relaystate2:` file: the passphrase it was sealed with.
+    private var restoreStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Spacer().frame(height: 40)
+            Text("Phrase de passe")
+                .font(.largeTitle.bold())
+                .foregroundStyle(Theme.text)
+            Text("Ce fichier est chiffré. Saisissez la phrase de passe choisie lors de l'export.")
+                .foregroundStyle(Theme.secondary)
+            SecureField("Phrase de passe", text: $passphrase)
+                .font(.title3)
+                .textContentType(.password)
+                .submitLabel(.go)
+                .focused($passphraseFocused)
+                .padding(.horizontal, 18)
+                .frame(height: 56)
+                .glassBar(radius: 22)
+                .onSubmit { restore(passphrase: passphrase) }
+                .accessibilityLabel("Phrase de passe du fichier")
+            if let restoreError {
+                Text(restoreError)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.danger)
+            }
+            Spacer()
+            primary(restoring ? "Déchiffrement…" : "Restaurer", disabled: passphrase.isEmpty || restoring) {
+                restore(passphrase: passphrase)
+            }
+            Button("Retour") {
+                passphrase = ""
+                importText = ""
+                restoreError = nil
+                step = .welcome
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .disabled(restoring)
+            .padding(.bottom, 12)
+        }
+        .onAppear { passphraseFocused = true }
+        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
+    }
+
+    private func pickedFile(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        // A .relaykey is a short text line; refuse anything large before reading it as text.
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= 4 * 1024 * 1024, let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else {
+            restoreError = ExportError.unreadable.message
+            return
+        }
+        importText = text
+        if ExportError.needsPassphrase(text) {
+            passphrase = ""
+            restoreError = nil
+            step = .restore
+        } else {
+            restore(passphrase: nil)
+        }
+    }
+
+    private func restore(passphrase: String?) {
+        guard !restoring, !importText.isEmpty else { return }
+        restoring = true
+        restoreError = nil
+        Task {
+            defer { restoring = false }
+            do {
+                try await model.importIdentity(text: importText, passphrase: passphrase)
+                importText = ""
+                self.passphrase = ""
+                Haptics.success()
+                model.finishOnboarding()
+            } catch {
+                Haptics.warning()
+                restoreError = error.message
+            }
+        }
     }
 
     private func create() {

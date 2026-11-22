@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var publishing = false
     @State private var confirmWipe = false
     @State private var exportURL: URL?
+    @State private var showExport = false
 
     var body: some View {
         @Bindable var model = model
@@ -128,7 +129,8 @@ struct SettingsView: View {
                 }
                 Section {
                     Button("Exporter mon identité", systemImage: "square.and.arrow.up") {
-                        exportURL = model.exportIdentity()
+                        exportURL = nil
+                        showExport = true
                     }
                     if let exportURL {
                         ShareLink(item: exportURL) {
@@ -138,7 +140,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Sauvegarde")
                 } footer: {
-                    Text("Le fichier contient ta clé privée. Garde-le dans un endroit sûr, jamais dans une conversation.")
+                    Text("Le fichier contient votre clé privée, chiffrée par une phrase de passe. Gardez-le dans un endroit sûr, jamais dans une conversation.")
                 }
                 Section {
                     Button("Effacement d'urgence", systemImage: "flame", role: .destructive) { confirmWipe = true }
@@ -161,6 +163,9 @@ struct SettingsView: View {
             .onAppear {
                 name = model.displayName
                 nodeDraft = model.nodeURL
+            }
+            .sheet(isPresented: $showExport) {
+                ExportPassphraseSheet { url in exportURL = url }
             }
             .confirmationDialog("Tout effacer maintenant ?", isPresented: $confirmWipe, titleVisibility: .visible) {
                 Button("Effacer clés, messages et médias", role: .destructive) {
@@ -200,5 +205,90 @@ struct SettingsView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? ""
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
+    }
+}
+
+/// Passphrase for a `.relaykey` export: typed twice, at least 10 characters.
+private struct ExportPassphraseSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let onExported: (URL) -> Void
+    @State private var passphrase = ""
+    @State private var confirmation = ""
+    @State private var sealing = false
+    @State private var failed = false
+    @FocusState private var focus: Field?
+
+    private enum Field { case passphrase, confirmation }
+
+    private var tooShort: Bool { passphrase.count < RelayCoreFactory.exportMinPassphrase }
+    private var mismatch: Bool { !confirmation.isEmpty && confirmation != passphrase }
+    private var canExport: Bool { !tooShort && confirmation == passphrase && !sealing }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("Phrase de passe", text: $passphrase)
+                        .textContentType(.newPassword)
+                        .focused($focus, equals: .passphrase)
+                        .submitLabel(.next)
+                        .onSubmit { focus = .confirmation }
+                        .accessibilityLabel("Phrase de passe")
+                    SecureField("Confirmation", text: $confirmation)
+                        .textContentType(.newPassword)
+                        .focused($focus, equals: .confirmation)
+                        .submitLabel(.done)
+                        .onSubmit(export)
+                        .accessibilityLabel("Confirmation de la phrase de passe")
+                } footer: {
+                    if mismatch {
+                        Text("Les deux phrases ne correspondent pas.").foregroundStyle(Theme.danger)
+                    } else if failed {
+                        Text("L'export a échoué. Réessayez.").foregroundStyle(Theme.danger)
+                    } else {
+                        Text("Au moins \(RelayCoreFactory.exportMinPassphrase) caractères. Elle vous sera demandée pour restaurer ce fichier. Sans elle, personne ne peut l'ouvrir, pas même nous.")
+                    }
+                }
+                Section {
+                    Button(action: export) {
+                        HStack {
+                            Text(sealing ? "Chiffrement…" : "Chiffrer et exporter")
+                            if sealing { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(!canExport)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
+            .navigationTitle("Exporter l'identité")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") { dismiss() }
+                }
+            }
+            .onAppear { focus = .passphrase }
+        }
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled(sealing)
+    }
+
+    private func export() {
+        guard canExport else { return }
+        sealing = true
+        failed = false
+        Task {
+            let url = await model.exportIdentity(passphrase: passphrase)
+            sealing = false
+            if let url {
+                Haptics.success()
+                onExported(url)
+                dismiss()
+            } else {
+                failed = true
+            }
+        }
     }
 }

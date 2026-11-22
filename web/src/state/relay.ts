@@ -22,6 +22,12 @@ import { MUTE_ALWAYS } from './types'
 import { cleanExpire, cleanGeo, cleanLink, cleanPoll, cleanStrings } from './sanitize'
 import { pushSubscription, registerSW, swSupported } from '../net/push'
 
+/** Shortest passphrase for a new `.relaykey` export (`EXPORT_MIN_PASSPHRASE` in relay-core). */
+export const EXPORT_MIN_PASSPHRASE = 10
+
+/** True when a backup text is a sealed `.relaykey`, which needs the passphrase field. */
+export const needsPassphrase = (text: string): boolean => text.trim().startsWith('relaystate2:')
+
 export interface Me {
   name: string
   fingerprint: string
@@ -325,11 +331,37 @@ export class Relay {
     await this.afterIdentity()
   }
 
-  async restoreBackup(file: File) {
+  /**
+   * Restores from a backup text: `.relaykey` (`relaystate1:` clear, `relaystate2:` with
+   * `passphrase`) or the older JSON backup of the web client.
+   */
+  async restoreBackup(text: string, passphrase: string | null = null) {
     if (!this.factory || !this.store) return
-    const j = JSON.parse(await file.text()) as { kind?: string; state?: string }
-    if (j.kind !== 'soma-relay-backup' || !j.state) throw new Error('Ce fichier n’est pas une sauvegarde Soma Relay.')
-    this.engine = this.factory.restore(fromB64(j.state))
+    const notBackup = 'Ce fichier n’est pas une sauvegarde Soma Relay.'
+    let state: Uint8Array
+    if (text.trim().startsWith('relaystate')) {
+      const open = this.factory.openExport
+      if (!open) throw new Error('Le moteur de test ne lit pas les fichiers .relaykey.')
+      // Argon2id takes a moment: let the "Déchiffrement…" state paint first.
+      await new Promise((r) => setTimeout(r, 30))
+      try {
+        state = open(passphrase, text)
+      } catch (e) {
+        if (e instanceof Error && e.name === 'Passphrase')
+          throw new Error(passphrase ? 'Phrase de passe incorrecte.' : 'Ce fichier demande sa phrase de passe.')
+        throw new Error(notBackup)
+      }
+    } else {
+      let j: { kind?: string; state?: string }
+      try {
+        j = JSON.parse(text) as { kind?: string; state?: string }
+      } catch {
+        throw new Error(notBackup)
+      }
+      if (j.kind !== 'soma-relay-backup' || !j.state) throw new Error(notBackup)
+      state = fromB64(j.state)
+    }
+    this.engine = this.factory.restore(state)
     await this.store.putBytes('meta', 'engine', this.engine.exportState())
     await this.afterIdentity()
   }
@@ -1991,6 +2023,23 @@ export class Relay {
     }
   }
 
+  /** True when the core can seal a `.relaykey` (relay-core wasm, not the mock). */
+  get canSealExport(): boolean {
+    return !!this.factory?.sealExport
+  }
+
+  /** `.relaykey` sealed with `passphrase` (at least `EXPORT_MIN_PASSPHRASE` characters). */
+  async exportFile(passphrase: string): Promise<Blob> {
+    const seal = this.factory?.sealExport
+    if (!seal) throw new Error('Export chiffré indisponible avec le moteur de test.')
+    if (passphrase.length < EXPORT_MIN_PASSPHRASE)
+      throw new Error(`Au moins ${EXPORT_MIN_PASSPHRASE} caractères.`)
+    const state = this.engineOrThrow.exportState()
+    await new Promise((r) => setTimeout(r, 30))
+    return new Blob([seal(passphrase, state)], { type: 'text/plain' })
+  }
+
+  /** Clear JSON backup, kept for the mock engine only. */
   backupFile(): Blob {
     const state = this.engineOrThrow.exportState()
     return new Blob(

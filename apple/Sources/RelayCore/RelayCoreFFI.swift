@@ -465,22 +465,6 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
-    typealias FfiType = UInt8
-    typealias SwiftType = UInt8
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
-        return try lift(readInt(&buf))
-    }
-
-    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -1497,9 +1481,9 @@ public func FfiConverterTypeMeshResult_lower(_ value: MeshResult) -> RustBuffer 
 
 /**
  * Plaintext of the backup blob (`docs/specs/2026-11-22-passkey-unlock-backup.md` section 3).
+ * The format version is not part of the record: `seal_vault` writes the current one.
  */
 public struct VaultPlain: Equatable, Hashable {
-    public var v: UInt8
     public var engine: Data
     public var handle: String?
     public var nodeUrl: String?
@@ -1508,8 +1492,7 @@ public struct VaultPlain: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(v: UInt8, engine: Data, handle: String?, nodeUrl: String?, channelsPrefs: Data, photo: Data?) {
-        self.v = v
+    public init(engine: Data, handle: String?, nodeUrl: String?, channelsPrefs: Data, photo: Data?) {
         self.engine = engine
         self.handle = handle
         self.nodeUrl = nodeUrl
@@ -1533,7 +1516,6 @@ public struct FfiConverterTypeVaultPlain: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VaultPlain {
         return
             try VaultPlain(
-                v: FfiConverterUInt8.read(from: &buf), 
                 engine: FfiConverterData.read(from: &buf), 
                 handle: FfiConverterOptionString.read(from: &buf), 
                 nodeUrl: FfiConverterOptionString.read(from: &buf), 
@@ -1543,7 +1525,6 @@ public struct FfiConverterTypeVaultPlain: FfiConverterRustBuffer {
     }
 
     public static func write(_ value: VaultPlain, into buf: inout [UInt8]) {
-        FfiConverterUInt8.write(value.v, into: &buf)
         FfiConverterData.write(value.engine, into: &buf)
         FfiConverterOptionString.write(value.handle, into: &buf)
         FfiConverterOptionString.write(value.nodeUrl, into: &buf)
@@ -1743,6 +1724,11 @@ enum VaultError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case BadKey(message: String
     )
+    /**
+     * A `relaystate2:` export with no passphrase, or one that does not open it.
+     */
+    case Passphrase(message: String
+    )
 
     
 
@@ -1787,6 +1773,9 @@ public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
         case 5: return .BadKey(
             message: try FfiConverterString.read(from: &buf)
             )
+        case 6: return .Passphrase(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1821,6 +1810,11 @@ public struct FfiConverterTypeVaultError: FfiConverterRustBuffer {
         
         case let .BadKey(message):
             writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .Passphrase(message):
+            writeInt(&buf, Int32(6))
             FfiConverterString.write(message, into: &buf)
             
         }
@@ -1939,6 +1933,29 @@ fileprivate struct FfiConverterSequenceData: FfiConverterRustBuffer {
         return seq
     }
 }
+/**
+ * Shortest passphrase the app accepts for a new export.
+ */
+public func exportMinPassphrase() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_export_min_passphrase(uniffiCallStatus
+    )
+})
+}
+/**
+ * Engine state from a `.relaykey` text: `relaystate1:` without passphrase, `relaystate2:` with it
+ * (`Passphrase` when missing or wrong). Other text throws `BadMagic`.
+ */
+public func openExport(passphrase: String?, text: String)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_open_export(
+        FfiConverterOptionString.lower(passphrase),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
 public func openVault(key: Data, id: String, blob: Data)throws  -> VaultPlain  {
     return try  FfiConverterTypeVaultPlain_lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
         uniffiCallStatus in
@@ -1970,7 +1987,21 @@ public func prfSaltUnlock() -> Data  {
 })
 }
 /**
- * Drops the photo when the blob would pass 1 MiB; still too large throws `TooLarge`.
+ * `relaystate2:` text of `state` (`export_state()`), sealed with `passphrase` (Argon2id 64 MiB,
+ * t 3, p 1, then AES-256-GCM). Takes about a second on a phone: call it off the main thread.
+ */
+public func sealExport(passphrase: String, state: Data) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_relay_ffi_fn_func_seal_export(
+        FfiConverterString.lower(passphrase),
+        FfiConverterData.lower(state),uniffiCallStatus
+    )
+})
+}
+/**
+ * Drops a photo over 64 KiB, or any photo when the blob would pass 1 MiB; still too large
+ * throws `TooLarge`.
  */
 public func sealVault(key: Data, id: String, plain: VaultPlain)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeVaultError_lift) {
@@ -2028,6 +2059,12 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_relay_ffi_checksum_func_export_min_passphrase() != 13434) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_open_export() != 22357) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_relay_ffi_checksum_func_open_vault() != 19503) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2037,7 +2074,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_relay_ffi_checksum_func_prf_salt_unlock() != 10011) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_relay_ffi_checksum_func_seal_vault() != 48970) {
+    if (uniffi_relay_ffi_checksum_func_seal_export() != 18949) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_relay_ffi_checksum_func_seal_vault() != 50708) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_relay_ffi_checksum_func_unlock_check() != 9048) {

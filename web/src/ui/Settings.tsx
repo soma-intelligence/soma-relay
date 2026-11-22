@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { LOCAL_BUS_AVAILABLE, relay } from '../state/relay'
+import { EXPORT_MIN_PASSPHRASE, LOCAL_BUS_AVAILABLE, relay } from '../state/relay'
 import { Avatar, downloadBlob, useRelay } from './common'
 import { AvatarPicker } from './PhotoEditor'
 import { frameE2eeSupported } from '../calls/callManager'
@@ -12,6 +12,7 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
   const [handle, setHandle] = useState(snap.settings.handle)
   const [handleMsg, setHandleMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [wipeStep, setWipeStep] = useState(0)
+  const [exporting, setExporting] = useState(false)
   const notif = typeof Notification !== 'undefined' ? Notification.permission : 'denied'
   const [, bump] = useState(0)
   const notifOn = snap.settings.notifications && notif === 'granted'
@@ -233,15 +234,32 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
 
         <div className="group-title">Données</div>
         <div className="group">
-          <div className="set-row">
-            <span className="lbl">
-              Exporter ma clé
-              <small>Une sauvegarde non chiffrée de ton identité et de tes sessions. Garde-la en lieu sûr.</small>
-            </span>
-            <button className="btn" onClick={() => downloadBlob(relay.backupFile(), `soma-relay-${snap.profile}.json`)}>
-              Exporter
-            </button>
-          </div>
+          {relay.canSealExport ? (
+            <>
+              <div className="set-row">
+                <span className="lbl">
+                  Exporter ma clé
+                  <small>Un fichier .relaykey de ton identité et de tes sessions, chiffré par une phrase de passe.</small>
+                </span>
+                {!exporting && (
+                  <button className="btn" onClick={() => setExporting(true)}>
+                    Exporter
+                  </button>
+                )}
+              </div>
+              {exporting && <ExportForm profile={snap.profile} onDone={() => setExporting(false)} />}
+            </>
+          ) : (
+            <div className="set-row">
+              <span className="lbl">
+                Exporter ma clé
+                <small>Moteur de test : une sauvegarde non chiffrée de ton identité. Garde-la en lieu sûr.</small>
+              </span>
+              <button className="btn" onClick={() => downloadBlob(relay.backupFile(), `soma-relay-${snap.profile}.json`)}>
+                Exporter
+              </button>
+            </div>
+          )}
           <div className="set-row">
             <span className="lbl">
               Tout effacer
@@ -263,5 +281,71 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
         </p>
       </div>
     </div>
+  )
+}
+
+/** Passphrase typed twice, then the sealed .relaykey download. */
+function ExportForm({ profile, onDone }: { profile: string; onDone: () => void }) {
+  const [pass, setPass] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const tooShort = pass.length < EXPORT_MIN_PASSPHRASE
+  const mismatch = confirm.length > 0 && confirm !== pass
+  const ok = !tooShort && confirm === pass && !busy
+
+  return (
+    <form
+      className="set-row export-form"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        if (!ok) return
+        setBusy(true)
+        setError(null)
+        try {
+          downloadBlob(await relay.exportFile(pass), `soma-relay-${profile}.relaykey`)
+          onDone()
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Export impossible.')
+          setBusy(false)
+        }
+      }}
+    >
+      <div className="field">
+        <label htmlFor="export-pass">Phrase de passe</label>
+        <input
+          id="export-pass"
+          type="password"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          autoComplete="new-password"
+          autoFocus
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="export-pass2">Confirmation</label>
+        <input
+          id="export-pass2"
+          type="password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          autoComplete="new-password"
+        />
+      </div>
+      <small className={mismatch || error ? 'error' : undefined} role={mismatch || error ? 'alert' : undefined}>
+        {error ??
+          (mismatch
+            ? 'Les deux phrases ne correspondent pas.'
+            : `Au moins ${EXPORT_MIN_PASSPHRASE} caractères. Elle te sera demandée pour restaurer ce fichier.`)}
+      </small>
+      <div className="row-btns">
+        <button type="button" className="btn" onClick={onDone} disabled={busy}>
+          Annuler
+        </button>
+        <button className="btn primary" disabled={!ok}>
+          {busy ? 'Chiffrement…' : 'Chiffrer et exporter'}
+        </button>
+      </div>
+    </form>
   )
 }

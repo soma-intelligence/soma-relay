@@ -8,12 +8,13 @@
 //! blob = "RVB1" || nonce(12) || AES-256-GCM(vault_key, nonce, postcard(VaultPlain), aad = vault_id ASCII)
 //! ```
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 pub use crate::error::VaultError;
-use crate::util::{Rng, hex, hkdf32, hmac, open, seal, to_postcard};
+use crate::util::{Rng, b64url, hex, hkdf32, hmac, open, seal, to_postcard, unb64url};
 
 /// `SHA-256("soma-relay/unlock/v1")`, the PRF salt whose output unlocks the app.
 pub const PRF_SALT_UNLOCK: [u8; 32] = [
@@ -34,7 +35,10 @@ const MAGIC: &[u8; 4] = b"RVB1";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const OVERHEAD: usize = MAGIC.len() + NONCE_LEN + TAG_LEN;
-const VAULT_VERSION: u8 = 1;
+/// The only `VaultPlain::v` this version writes and reads. `seal_vault` sets it.
+pub const VAULT_VERSION: u8 = 1;
+/// Largest display photo kept in the vault; a larger one is dropped before sealing.
+pub const MAX_PHOTO_BYTES: usize = 64 * 1024;
 const SIG_DOMAIN: &[u8] = b"relay-vault-v1";
 
 /// Plaintext of the backup blob, postcard encoded. Field order is part of the format.
@@ -68,7 +72,8 @@ pub fn vault_id(credential_id: &[u8]) -> String {
     hex(&h.finalize())
 }
 
-/// Seals `plain` with a fresh random nonce. When the blob would exceed `MAX_VAULT_BYTES`,
+/// Seals `plain` with a fresh random nonce. `plain.v` is ignored and written as `VAULT_VERSION`.
+/// A photo over `MAX_PHOTO_BYTES` is dropped; when the blob would still exceed `MAX_VAULT_BYTES`,
 /// the photo is dropped and sealing retried; still too large gives `TooLarge`.
 pub fn seal_vault(key: &[u8; 32], id: &str, plain: &VaultPlain) -> Result<Vec<u8>, VaultError> {
     seal_with(key, id, plain, Rng::os().bytes())
@@ -86,7 +91,10 @@ pub fn seal_vault_with_nonce(
 }
 
 fn seal_with(key: &[u8; 32], id: &str, plain: &VaultPlain, nonce: [u8; NONCE_LEN]) -> Result<Vec<u8>, VaultError> {
-    let mut body = Zeroizing::new(to_postcard(plain));
+    // Always the version `open_vault` reads, and never a photo over 64 KiB.
+    let photo = plain.photo.clone().filter(|p| p.len() <= MAX_PHOTO_BYTES);
+    let plain = VaultPlain { v: VAULT_VERSION, photo, ..plain.clone() };
+    let mut body = Zeroizing::new(to_postcard(&plain));
     if body.len() + OVERHEAD > MAX_VAULT_BYTES && plain.photo.is_some() {
         body = Zeroizing::new(to_postcard(&VaultPlain { photo: None, ..plain.clone() }));
     }
@@ -122,6 +130,67 @@ pub fn open_vault(key: &[u8; 32], id: &str, blob: &[u8]) -> Result<VaultPlain, V
         return Err(VaultError::Parse);
     }
     Ok(plain)
+}
+
+// ------------------------------------------------------------------ .relaykey export
+//
+// relaystate1:<b64url(state)>                          clear, read only (older exports)
+// relaystate2:<b64url(salt16 || nonce12 || ct)>        ct = AES-256-GCM(k, nonce, state, aad "")
+//                                                      k  = Argon2id(passphrase, salt, 64 MiB, t 3, p 1)
+
+/// Prefix of the clear export written before v2. Still imported, never written.
+pub const EXPORT_V1_PREFIX: &str = "relaystate1:";
+/// Prefix of the passphrase sealed export.
+pub const EXPORT_V2_PREFIX: &str = "relaystate2:";
+/// Shortest passphrase the apps accept for a new export (the core itself does not refuse).
+pub const EXPORT_MIN_PASSPHRASE: usize = 10;
+const EXPORT_SALT_LEN: usize = 16;
+
+fn export_key(passphrase: &str, salt: &[u8; EXPORT_SALT_LEN]) -> Zeroizing<[u8; 32]> {
+    let params = Params::new(64 * 1024, 3, 1, Some(32)).expect("static argon2 params");
+    let mut key = Zeroizing::new([0u8; 32]);
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key[..])
+        .expect("argon2 with a 16-byte salt and 32-byte output");
+    key
+}
+
+/// `relaystate2:` text of `state` (`RelayEngine::export_state()`), sealed with `passphrase`.
+pub fn seal_export(passphrase: &str, state: &[u8]) -> String {
+    let mut rng = Rng::os();
+    seal_export_with(passphrase, state, rng.bytes(), rng.bytes())
+}
+
+fn seal_export_with(passphrase: &str, state: &[u8], salt: [u8; EXPORT_SALT_LEN], nonce: [u8; NONCE_LEN]) -> String {
+    let key = export_key(passphrase, &salt);
+    let ct = seal(&key, &nonce, b"", state);
+    let mut raw = Vec::with_capacity(EXPORT_SALT_LEN + NONCE_LEN + ct.len());
+    raw.extend_from_slice(&salt);
+    raw.extend_from_slice(&nonce);
+    raw.extend_from_slice(&ct);
+    format!("{EXPORT_V2_PREFIX}{}", b64url(&raw))
+}
+
+/// Engine state from a `.relaykey` text. `relaystate1:` needs no passphrase (one given is ignored);
+/// `relaystate2:` gives `Passphrase` when it is missing or wrong. Anything else is `BadMagic`.
+/// Surrounding whitespace is ignored.
+pub fn open_export(passphrase: Option<&str>, text: &str) -> Result<Vec<u8>, VaultError> {
+    let text = text.trim();
+    if let Some(b64) = text.strip_prefix(EXPORT_V1_PREFIX) {
+        return unb64url(b64).map_err(|_| VaultError::BadMagic);
+    }
+    let Some(b64) = text.strip_prefix(EXPORT_V2_PREFIX) else {
+        return Err(VaultError::BadMagic);
+    };
+    let raw = unb64url(b64).map_err(|_| VaultError::BadMagic)?;
+    if raw.len() < EXPORT_SALT_LEN + NONCE_LEN + TAG_LEN {
+        return Err(VaultError::BadMagic);
+    }
+    let passphrase = passphrase.ok_or(VaultError::Passphrase)?;
+    let salt: [u8; EXPORT_SALT_LEN] = raw[..EXPORT_SALT_LEN].try_into().expect("length checked");
+    let nonce: [u8; NONCE_LEN] = raw[EXPORT_SALT_LEN..EXPORT_SALT_LEN + NONCE_LEN].try_into().expect("length checked");
+    let key = export_key(passphrase, &salt);
+    open(&key, &nonce, b"", &raw[EXPORT_SALT_LEN + NONCE_LEN..]).map_err(|_| VaultError::Passphrase)
 }
 
 /// Bytes the identity Ed25519 key signs for `PUT /v1/vault/{id}`:
@@ -280,6 +349,72 @@ mod tests {
         let vk = VerifyingKey::from_bytes(&pk).unwrap();
         assert!(vk.verify(&msg, &Signature::from_bytes(&sig)).is_ok());
         assert!(vk.verify(b"other", &Signature::from_bytes(&sig)).is_err());
+    }
+
+    #[test]
+    fn seal_forces_version() {
+        let key = vault_key(&[3; 32]);
+        let id = vault_id(b"one");
+        let plain = VaultPlain { v: 7, ..sample() };
+        let blob = seal_vault(&key, &id, &plain).unwrap();
+        let opened = open_vault(&key, &id, &blob).unwrap();
+        assert_eq!(opened.v, VAULT_VERSION);
+        assert_eq!(opened, VaultPlain { v: VAULT_VERSION, ..plain });
+    }
+
+    #[test]
+    fn photo_over_64k_dropped() {
+        let key = vault_key(&[3; 32]);
+        let id = vault_id(b"one");
+        let at_limit = VaultPlain { photo: Some(vec![5; MAX_PHOTO_BYTES]), ..sample() };
+        let opened = open_vault(&key, &id, &seal_vault(&key, &id, &at_limit).unwrap()).unwrap();
+        assert_eq!(opened.photo.as_deref().map(<[u8]>::len), Some(65536));
+        let over = VaultPlain { photo: Some(vec![5; MAX_PHOTO_BYTES + 1]), ..sample() };
+        let opened = open_vault(&key, &id, &seal_vault(&key, &id, &over).unwrap()).unwrap();
+        assert_eq!(opened.photo, None);
+        assert_eq!(opened.engine, over.engine);
+    }
+
+    #[test]
+    fn export_v2_roundtrip() {
+        let state = b"engine state bytes".to_vec();
+        let text = seal_export("correct horse battery", &state);
+        assert!(text.starts_with("relaystate2:"));
+        let raw = crate::util::unb64url(&text["relaystate2:".len()..]).unwrap();
+        assert_eq!(raw.len(), 16 + 12 + state.len() + 16, "salt16 || nonce12 || ct");
+        assert_ne!(seal_export("correct horse battery", &state), text, "fresh salt and nonce");
+        assert_eq!(open_export(Some("correct horse battery"), &text).unwrap(), state);
+        // A file read back may carry a trailing newline.
+        assert_eq!(open_export(Some("correct horse battery"), &format!("{text}\n")).unwrap(), state);
+    }
+
+    #[test]
+    fn export_v2_wrong_passphrase() {
+        let text = seal_export("correct horse battery", b"state");
+        assert_eq!(open_export(Some("correct horse batterz"), &text), Err(VaultError::Passphrase));
+        assert_eq!(open_export(Some(""), &text), Err(VaultError::Passphrase));
+    }
+
+    #[test]
+    fn export_v2_needs_passphrase() {
+        let text = seal_export("correct horse battery", b"state");
+        assert_eq!(open_export(None, &text), Err(VaultError::Passphrase));
+    }
+
+    #[test]
+    fn export_v1_still_imports() {
+        let state = vec![1, 2, 3, 250, 251, 252];
+        let text = format!("relaystate1:{}", crate::util::b64url(&state));
+        assert_eq!(open_export(None, &text).unwrap(), state);
+        assert_eq!(open_export(Some("ignored passphrase"), &text).unwrap(), state);
+    }
+
+    #[test]
+    fn export_rejects_other_text() {
+        assert_eq!(open_export(None, "hello"), Err(VaultError::BadMagic));
+        assert_eq!(open_export(None, "relaystate1:!!!"), Err(VaultError::BadMagic));
+        assert_eq!(open_export(Some("x"), "relaystate2:AAAA"), Err(VaultError::BadMagic));
+        assert_eq!(open_export(Some("x"), "relaystate3:AAAA"), Err(VaultError::BadMagic));
     }
 
     /// Regenerates `docs/vectors/vault-v1.json`:

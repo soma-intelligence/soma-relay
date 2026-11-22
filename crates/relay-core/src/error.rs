@@ -79,6 +79,8 @@ pub enum VaultError {
     Decrypt,
     /// The plaintext is not a `VaultPlain` this version reads.
     Parse,
+    /// A `relaystate2:` export with no passphrase, or one that does not open it.
+    Passphrase,
 }
 
 impl VaultError {
@@ -89,6 +91,7 @@ impl VaultError {
             VaultError::BadMagic => "BadMagic",
             VaultError::Decrypt => "Decrypt",
             VaultError::Parse => "Parse",
+            VaultError::Passphrase => "Passphrase",
         }
     }
 
@@ -98,6 +101,7 @@ impl VaultError {
             VaultError::BadMagic => "not a vault blob",
             VaultError::Decrypt => "vault does not decrypt with this key",
             VaultError::Parse => "vault contents do not parse",
+            VaultError::Passphrase => "missing or wrong passphrase",
         }
     }
 }

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { relay } from '../state/relay'
+import { needsPassphrase, relay } from '../state/relay'
 import { useRelay } from './common'
 import { CipherQR } from './CipherQR'
 
@@ -23,6 +23,9 @@ export function Onboarding() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  // A sealed .relaykey waiting for its passphrase.
+  const [sealed, setSealed] = useState<string | null>(null)
+  const [passphrase, setPassphrase] = useState('')
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -37,13 +40,82 @@ export function Onboarding() {
     }
   }
 
-  const restore = async (file: File | undefined) => {
-    if (!file) return
+  const restoreText = async (text: string, pass: string | null) => {
+    setBusy(true)
+    setError(null)
     try {
-      await relay.restoreBackup(file)
+      await relay.restoreBackup(text, pass)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sauvegarde illisible.')
+      setBusy(false)
     }
+  }
+
+  const restore = async (file: File | undefined) => {
+    if (!file) return
+    setError(null)
+    if (file.size > 4 * 1024 * 1024) {
+      setError('Ce fichier n’est pas une sauvegarde Soma Relay.')
+      return
+    }
+    const text = await file.text()
+    if (needsPassphrase(text)) {
+      setPassphrase('')
+      setSealed(text)
+      return
+    }
+    await restoreText(text, null)
+  }
+
+  if (sealed !== null) {
+    return (
+      <main className="onboard">
+        <div className="onboard-card">
+          <Mark />
+          <h1>Phrase de passe</h1>
+          <p>Cette sauvegarde est chiffrée. Saisis la phrase de passe choisie lors de l’export.</p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (passphrase) void restoreText(sealed, passphrase)
+            }}
+          >
+            <div className="field">
+              <label htmlFor="restore-pass">Phrase de passe</label>
+              <input
+                id="restore-pass"
+                type="password"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+              />
+            </div>
+            {error && (
+              <p className="error" role="alert">
+                {error}
+              </p>
+            )}
+            <button className="btn primary block" disabled={!passphrase || busy}>
+              {busy ? 'Déchiffrement…' : 'Restaurer'}
+            </button>
+          </form>
+          <div className="row-btns">
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() => {
+                setSealed(null)
+                setPassphrase('')
+                setError(null)
+              }}
+            >
+              Retour
+            </button>
+          </div>
+        </div>
+      </main>
+    )
   }
 
   return (
@@ -85,9 +157,13 @@ export function Onboarding() {
         <input
           ref={fileRef}
           type="file"
-          accept="application/json,.json,.relaybackup"
+          accept=".relaykey,application/json,.json,.relaybackup,text/plain"
           hidden
-          onChange={(e) => void restore(e.target.files?.[0])}
+          data-testid="restore-file"
+          onChange={(e) => {
+            void restore(e.target.files?.[0])
+            e.target.value = ''
+          }}
         />
         <p className="engine-note">
           {snap.engineKind === 'mock'

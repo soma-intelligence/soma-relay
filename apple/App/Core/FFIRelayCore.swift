@@ -18,6 +18,19 @@ nonisolated final class FFIRelayCore: RelayCoreAPI {
         do { return FFIRelayCore(try RelayEngine.restore(state: state)) } catch { throw Self.map(error) }
     }
 
+    static func sealExport(passphrase: String, state: Data) -> String {
+        RelayCore.sealExport(passphrase: passphrase, state: state)
+    }
+
+    static func openExport(passphrase: String?, text: String) throws(ExportError) -> Data {
+        do {
+            return try RelayCore.openExport(passphrase: passphrase, text: text)
+        } catch {
+            // The generated `VaultError` is internal to the RelayCore module, as `RelayError` is.
+            throw String(reflecting: error).contains("Passphrase") ? .passphrase : .unreadable
+        }
+    }
+
     /// The generated `RelayError` is internal to the RelayCore module: read its case from its
     /// reflection (`RelayCore.RelayError.KeyChanged(message: "...")`).
     static func map(_ error: Error) -> RelayCoreError {

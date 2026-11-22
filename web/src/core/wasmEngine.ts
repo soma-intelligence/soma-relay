@@ -30,6 +30,8 @@ interface RawClass {
 interface PkgModule {
   default: (input?: unknown) => Promise<unknown>
   RelayEngine: RawClass
+  sealExport?: (passphrase: string, state: Uint8Array) => string
+  openExport?: (passphrase: string | null | undefined, text: string) => Uint8Array
 }
 
 const pkgLoaders = import.meta.glob('./pkg/relay_wasm.js')
@@ -190,6 +192,9 @@ export async function loadWasmFactory(): Promise<EngineFactory | null> {
           throw wrapError(e)
         }
       },
+      // Older pkgs lack these; the client then keeps the clear JSON backup.
+      sealExport: mod.sealExport ? (passphrase, state) => mod.sealExport!(passphrase, state) : undefined,
+      openExport: mod.openExport ? (passphrase, text) => bytes(mod.openExport!(passphrase, text)) : undefined,
     }
   } catch (e) {
     console.error('relay-wasm failed to load, falling back to the mock engine', e)

@@ -260,6 +260,8 @@ pub enum VaultError {
     Parse { message: String },
     /// A PRF output or vault key that is not 32 bytes.
     BadKey { message: String },
+    /// A `relaystate2:` export with no passphrase, or one that does not open it.
+    Passphrase { message: String },
 }
 
 impl std::error::Error for VaultError {}
@@ -272,6 +274,7 @@ impl std::fmt::Display for VaultError {
             VaultError::Decrypt { message } => ("Decrypt", message),
             VaultError::Parse { message } => ("Parse", message),
             VaultError::BadKey { message } => ("BadKey", message),
+            VaultError::Passphrase { message } => ("Passphrase", message),
         };
         write!(f, "{k}: {m}")
     }
@@ -285,6 +288,7 @@ impl From<core::VaultError> for VaultError {
             core::VaultError::BadMagic => VaultError::BadMagic { message },
             core::VaultError::Decrypt => VaultError::Decrypt { message },
             core::VaultError::Parse => VaultError::Parse { message },
+            core::VaultError::Passphrase => VaultError::Passphrase { message },
         }
     }
 }
@@ -296,9 +300,9 @@ fn key32(b: &[u8]) -> std::result::Result<[u8; 32], VaultError> {
 }
 
 /// Plaintext of the backup blob (`docs/specs/2026-11-22-passkey-unlock-backup.md` section 3).
+/// The format version is not part of the record: `seal_vault` writes the current one.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct VaultPlain {
-    pub v: u8,
     pub engine: Vec<u8>,
     pub handle: Option<String>,
     pub node_url: Option<String>,
@@ -309,7 +313,7 @@ pub struct VaultPlain {
 impl From<VaultPlain> for core::VaultPlain {
     fn from(p: VaultPlain) -> Self {
         core::VaultPlain {
-            v: p.v,
+            v: core::vault::VAULT_VERSION,
             engine: p.engine,
             handle: p.handle,
             node_url: p.node_url,
@@ -322,7 +326,6 @@ impl From<VaultPlain> for core::VaultPlain {
 impl From<core::VaultPlain> for VaultPlain {
     fn from(p: core::VaultPlain) -> Self {
         VaultPlain {
-            v: p.v,
             engine: p.engine,
             handle: p.handle,
             node_url: p.node_url,
@@ -361,7 +364,8 @@ pub fn vault_id(credential_id: Vec<u8>) -> String {
     core::vault::vault_id(&credential_id)
 }
 
-/// Drops the photo when the blob would pass 1 MiB; still too large throws `TooLarge`.
+/// Drops a photo over 64 KiB, or any photo when the blob would pass 1 MiB; still too large
+/// throws `TooLarge`.
 #[uniffi::export]
 pub fn seal_vault(
     key: Vec<u8>,
@@ -422,4 +426,24 @@ impl MeshRouter {
     pub fn frames_for(&self, envelope: Vec<u8>, mtu: u32) -> Vec<Vec<u8>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner()).frames_for(&envelope, mtu)
     }
+}
+
+/// `relaystate2:` text of `state` (`export_state()`), sealed with `passphrase` (Argon2id 64 MiB,
+/// t 3, p 1, then AES-256-GCM). Takes about a second on a phone: call it off the main thread.
+#[uniffi::export]
+pub fn seal_export(passphrase: String, state: Vec<u8>) -> String {
+    core::vault::seal_export(&passphrase, &state)
+}
+
+/// Engine state from a `.relaykey` text: `relaystate1:` without passphrase, `relaystate2:` with it
+/// (`Passphrase` when missing or wrong). Other text throws `BadMagic`.
+#[uniffi::export]
+pub fn open_export(passphrase: Option<String>, text: String) -> std::result::Result<Vec<u8>, VaultError> {
+    Ok(core::vault::open_export(passphrase.as_deref(), &text)?)
+}
+
+/// Shortest passphrase the app accepts for a new export.
+#[uniffi::export]
+pub fn export_min_passphrase() -> u32 {
+    core::vault::EXPORT_MIN_PASSPHRASE as u32
 }

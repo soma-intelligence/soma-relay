@@ -138,4 +138,59 @@ enum RelayCoreFactory {
         try MockRelayCore.restore(state: state)
         #endif
     }
+
+    // MARK: .relaykey export
+
+    /// Shortest passphrase accepted for a new export (`EXPORT_MIN_PASSPHRASE` in relay-core).
+    static let exportMinPassphrase = 10
+
+    /// `relaystate2:` text of `state`, sealed with `passphrase` (Argon2id 64 MiB, then AES-256-GCM).
+    /// Slow on purpose (about a second): call it off the main actor. Nil without the Rust core.
+    nonisolated static func sealExport(passphrase: String, state: Data) -> String? {
+        #if canImport(RelayCore)
+        FFIRelayCore.sealExport(passphrase: passphrase, state: state)
+        #else
+        nil
+        #endif
+    }
+
+    /// Engine state from a `.relaykey` text: `relaystate1:` needs no passphrase, `relaystate2:` does.
+    nonisolated static func openExport(passphrase: String?, text: String) throws(ExportError) -> Data {
+        #if canImport(RelayCore)
+        try FFIRelayCore.openExport(passphrase: passphrase, text: text)
+        #else
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix(ExportError.v2Prefix) { throw .unavailable }
+        guard trimmed.hasPrefix(ExportError.v1Prefix),
+            let state = Data(base64url: String(trimmed.dropFirst(ExportError.v1Prefix.count)))
+        else { throw .unreadable }
+        return state
+        #endif
+    }
+}
+
+/// Why a `.relaykey` text does not open.
+nonisolated enum ExportError: Error, Equatable, Sendable {
+    /// `relaystate2:` with no passphrase, or a wrong one.
+    case passphrase
+    /// Not a `.relaykey` text, or damaged.
+    case unreadable
+    /// The test core cannot open a sealed export.
+    case unavailable
+
+    static let v1Prefix = "relaystate1:"
+    static let v2Prefix = "relaystate2:"
+
+    /// True when `text` is a sealed export, which needs the passphrase field.
+    static func needsPassphrase(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(v2Prefix)
+    }
+
+    var message: String {
+        switch self {
+        case .passphrase: "Phrase de passe incorrecte."
+        case .unreadable: "Ce fichier n'est pas une identité Soma Relay."
+        case .unavailable: "Cette version de test ne sait pas ouvrir un export chiffré."
+        }
+    }
 }

@@ -793,13 +793,40 @@ final class AppModel {
         scheduleSave()
     }
 
-    /// Sealed export of the engine state, for a backup the user keeps.
-    func exportIdentity() -> URL? {
-        guard let core else { return nil }
+    /// Export of the engine state sealed with `passphrase` (`relaystate2:`), for a backup the user
+    /// keeps. Argon2id takes about a second, so the sealing runs off the main actor.
+    func exportIdentity(passphrase: String) async -> URL? {
+        guard let core, passphrase.count >= RelayCoreFactory.exportMinPassphrase else { return nil }
+        let state = core.exportState()
+        let payload = await Task.detached(priority: .userInitiated) {
+            RelayCoreFactory.sealExport(passphrase: passphrase, state: state)
+        }.value
+        guard let payload else { return nil }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("soma-relay-identite.relaykey")
-        let payload = "relaystate1:" + core.exportState().base64url
-        try? Data(payload.utf8).write(to: url, options: [.atomic, .completeFileProtection])
+        do {
+            try Data(payload.utf8).write(to: url, options: [.atomic, .completeFileProtection])
+        } catch {
+            return nil
+        }
         return url
+    }
+
+    /// Onboarding: identity from a `.relaykey` text (`relaystate1:` clear, `relaystate2:` with
+    /// `passphrase`). Replaces nothing: only offered before an identity exists.
+    func importIdentity(text: String, passphrase: String?) async throws(ExportError) {
+        guard core == nil else { return }
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<Data, ExportError> in
+            do throws(ExportError) {
+                return .success(try RelayCoreFactory.openExport(passphrase: passphrase, text: text))
+            } catch {
+                return .failure(error)
+            }
+        }.value
+        let state = try result.get()
+        guard let restored = try? RelayCoreFactory.restore(state: state) else { throw .unreadable }
+        core = restored
+        saveNow()
+        didLoadCore()
     }
 
     /// Emergency wipe: keys, database, media, then back to onboarding.

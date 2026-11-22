@@ -1456,6 +1456,26 @@ a {
 .set-row input:focus {
   border-color: var(--focus);
 }
+.set-row.export-form {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 12px 0;
+}
+.export-form .field {
+  margin-bottom: 10px;
+}
+.export-form small {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.export-form small.error {
+  color: var(--danger);
+}
+.export-form .row-btns {
+  justify-content: flex-end;
+}
 .switch {
   appearance: none;
   width: 51px;

@@ -159,3 +159,44 @@ test('poll vote, edit, delete for everyone and reaction cross profiles', async (
   await expect(ines.locator('.bubble', { hasText: oops })).toHaveCount(0, { timeout: 20_000 })
   await expect(ines.getByText('Message supprimé').last()).toBeVisible()
 })
+
+// .relaykey v2: Alice exports her identity sealed with a passphrase, a fresh profile restores it.
+test('export with a passphrase, then restore it in another profile', async ({ browser }) => {
+  const tag = Date.now().toString(36)
+  const pass = `phrase de passe ${tag}`
+  const alice = await open(browser, `ka-${tag}`)
+  await onboard(alice, 'Alice')
+  await alice.getByRole('tab', { name: 'Réglages' }).click()
+  const fp = (await alice.locator('.set-row', { hasText: 'Empreinte' }).locator('small.mono').textContent())!.trim()
+  expect(fp.length).toBeGreaterThan(10)
+
+  await alice.locator('.set-row', { hasText: 'Exporter ma clé' }).getByRole('button', { name: 'Exporter' }).click()
+  const exportBtn = alice.getByRole('button', { name: 'Chiffrer et exporter' })
+  await alice.fill('#export-pass', 'neuf car.')
+  await alice.fill('#export-pass2', 'neuf car.')
+  await expect(exportBtn).toBeDisabled()
+  await alice.fill('#export-pass', pass)
+  await alice.fill('#export-pass2', pass + 'x')
+  await expect(alice.getByText('Les deux phrases ne correspondent pas.')).toBeVisible()
+  await alice.fill('#export-pass2', pass)
+  const [download] = await Promise.all([alice.waitForEvent('download', { timeout: 30_000 }), exportBtn.click()])
+  expect(download.suggestedFilename()).toMatch(/\.relaykey$/)
+  const fs = await import('node:fs/promises')
+  const text = await fs.readFile((await download.path())!, 'utf8')
+  expect(text.startsWith('relaystate2:')).toBe(true)
+  expect(text).not.toContain('Alice')
+
+  // A new profile restores it: the passphrase field shows for relaystate2 only.
+  const bob = await open(browser, `kb-${tag}`)
+  const file = { name: 'alice.relaykey', mimeType: 'text/plain', buffer: Buffer.from(text) }
+  await bob.getByTestId('restore-file').setInputFiles(file)
+  await bob.fill('#restore-pass', 'pas la bonne phrase')
+  await bob.getByRole('button', { name: 'Restaurer' }).click()
+  await expect(bob.getByText('Phrase de passe incorrecte.')).toBeVisible({ timeout: 30_000 })
+  await bob.fill('#restore-pass', pass)
+  await bob.getByRole('button', { name: 'Restaurer' }).click()
+  await expect(bob.locator('.fp-grid')).toHaveText(fp, { timeout: 30_000 })
+  await bob.getByRole('button', { name: 'C’est parti' }).click()
+  await bob.getByRole('tab', { name: 'Réglages' }).click()
+  await expect(bob.locator('#set-name')).toHaveValue('Alice')
+})

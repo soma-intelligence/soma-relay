@@ -279,10 +279,11 @@ impl WasmMeshRouter {
 // ------------------------------------------------------------------ passkey vault
 //
 // `VaultPlain` crosses as a plain object:
-// `{ v: number, engine: Uint8Array, handle: string | null, nodeUrl: string | null,
+// `{ engine: Uint8Array, handle: string | null, nodeUrl: string | null,
 //    channelsPrefs: Uint8Array, photo: Uint8Array | null }`.
-// Errors are `Error` whose `name` is `TooLarge`, `BadMagic`, `Decrypt`, `Parse`, `BadKey`
-// or `Malformed` (a field of the object has the wrong type).
+// The format version is not part of it: `sealVault` writes the current one (a `v` given is ignored).
+// Errors are `Error` whose `name` is `TooLarge`, `BadMagic`, `Decrypt`, `Parse`, `Passphrase`,
+// `BadKey` or `Malformed` (a field of the object has the wrong type).
 
 fn named_err(name: &str, message: &str) -> JsValue {
     let x = js_sys::Error::new(message);
@@ -329,12 +330,8 @@ fn opt_string_field(o: &JsValue, name: &str) -> Result<Option<String>, JsValue> 
 }
 
 fn plain_from_js(o: &JsValue) -> Result<core::VaultPlain, JsValue> {
-    let v = field(o, "v")?
-        .as_f64()
-        .filter(|n| n.fract() == 0.0 && (0.0..=255.0).contains(n))
-        .ok_or_else(|| named_err("Malformed", "v must be an integer 0-255"))?;
     Ok(core::VaultPlain {
-        v: v as u8,
+        v: core::vault::VAULT_VERSION,
         engine: bytes_field(o, "engine")?,
         handle: opt_string_field(o, "handle")?,
         node_url: opt_string_field(o, "nodeUrl")?,
@@ -346,7 +343,6 @@ fn plain_from_js(o: &JsValue) -> Result<core::VaultPlain, JsValue> {
 fn plain_to_js(p: core::VaultPlain) -> Result<Object, JsValue> {
     let o = Object::new();
     let opt_str = |s: Option<String>| s.map_or(JsValue::NULL, JsValue::from);
-    Reflect::set(&o, &"v".into(), &JsValue::from(p.v))?;
     Reflect::set(&o, &"engine".into(), &Uint8Array::from(p.engine.as_slice()))?;
     Reflect::set(&o, &"handle".into(), &opt_str(p.handle))?;
     Reflect::set(&o, &"nodeUrl".into(), &opt_str(p.node_url))?;
@@ -392,6 +388,26 @@ pub fn vault_id(credential_id: &[u8]) -> String {
 #[wasm_bindgen(js_name = sealVault)]
 pub fn seal_vault(key: &[u8], id: String, plain: JsValue) -> Result<Vec<u8>, JsValue> {
     core::vault::seal_vault(&key32(key)?, &id, &plain_from_js(&plain)?).map_err(vault_err)
+}
+
+/// `relaystate2:` text of `state` (`exportState()`), sealed with `passphrase`
+/// (Argon2id 64 MiB, t 3, p 1, then AES-256-GCM).
+#[wasm_bindgen(js_name = sealExport)]
+pub fn seal_export(passphrase: &str, state: &[u8]) -> String {
+    core::vault::seal_export(passphrase, state)
+}
+
+/// Engine state from a `.relaykey` text: `relaystate1:` without passphrase, `relaystate2:` with it.
+/// Throws `Passphrase` when it is missing or wrong, `BadMagic` for other text.
+#[wasm_bindgen(js_name = openExport)]
+pub fn open_export(passphrase: Option<String>, text: &str) -> Result<Vec<u8>, JsValue> {
+    core::vault::open_export(passphrase.as_deref(), text).map_err(vault_err)
+}
+
+/// Shortest passphrase the app accepts for a new export.
+#[wasm_bindgen(js_name = exportMinPassphrase)]
+pub fn export_min_passphrase() -> u32 {
+    core::vault::EXPORT_MIN_PASSPHRASE as u32
 }
 
 #[wasm_bindgen(js_name = openVault)]
