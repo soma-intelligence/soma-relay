@@ -128,6 +128,7 @@ final class AppModel {
         if demo {
             DemoData.seed(self)
             phase = .ready
+            DemoData.runLiveDemo(self)
             return
         }
         if let state = db.value(for: "engine"), let restored = try? RelayCoreFactory.restore(state: state) {

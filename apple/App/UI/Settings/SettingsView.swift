@@ -15,7 +15,9 @@ struct SettingsView: View {
             Form {
                 Section {
                     HStack(spacing: 14) {
-                        Avatar(name: model.displayName, size: 56, tint: Theme.mesh.opacity(0.25))
+                        EditablePhoto(name: model.displayName, photo: model.photos[AppModel.me], size: 64, cropTitle: "Ta photo") { image in
+                            model.setMyPhoto(image)
+                        }
                         VStack(alignment: .leading, spacing: 3) {
                             TextField("Ton nom", text: $name)
                                 .font(.title3.weight(.semibold))
@@ -27,6 +29,8 @@ struct SettingsView: View {
                                 .foregroundStyle(Theme.secondary)
                         }
                     }
+                } footer: {
+                    Text("Ta photo et ton nom partent chiffrés à tes contacts et à tes groupes, une fois à chaque changement.")
                 }
                 Section {
                     if let words = model.core?.safetyWords() {

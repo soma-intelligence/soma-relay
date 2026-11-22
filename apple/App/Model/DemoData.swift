@@ -113,6 +113,7 @@ enum DemoData {
         conversation(model, id: n, kind: .direct, title: "Nadia", peer: nadia, at: ms(-60 * 20), unread: 0, transport: .sms, preview: "Reçu par SMS chiffré, merci !")
         message(model, n, from: nadia, at: ms(-60 * 20), text: "Reçu par SMS chiffré, merci !", status: .delivered, transport: .sms, hops: nil)
 
+        seedProfiles(model)
         model.reloadConversations()
     }
 
