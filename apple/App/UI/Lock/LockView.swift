@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Full-screen lock. Also the privacy cover of the app switcher snapshot: when Relay is not
-/// active and not locked, it shows the same screen without the buttons.
+/// Full-screen lock, shown in its own window above every sheet (`LockWindowHost`). Also the
+/// privacy cover of the app switcher snapshot: when Relay is not active and not locked, it shows
+/// the same screen without the buttons.
 struct LockView: View {
     let lock: LockController
     /// The cover drawn while the scene is inactive or in the background, not a real lock.
     var coverOnly = false
-    @Environment(\.scenePhase) private var scenePhase
+    /// The scene is active. Passed in: this view lives in a window SwiftUI's scene phase does not reach.
+    var sceneActive = true
 
     var body: some View {
         ZStack {
@@ -37,9 +39,9 @@ struct LockView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(coverOnly ? "lock.cover" : "lock.screen")
-        .task(id: scenePhase == .active) {
+        .task(id: sceneActive) {
             // A passkey sheet or Face ID needs a foreground scene.
-            guard !coverOnly, scenePhase == .active else { return }
+            guard !coverOnly, sceneActive else { return }
             await lock.autoStartIfNeeded()
         }
         .animation(.smooth, value: lock.showsDeviceFallback)
@@ -74,6 +76,7 @@ struct LockView: View {
                 } label: {
                     Text("Utiliser Face ID ou le code")
                         .font(.headline)
+                        .foregroundStyle(Theme.text)
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: 44)
                 }

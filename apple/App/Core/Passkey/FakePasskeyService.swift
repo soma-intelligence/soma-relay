@@ -25,10 +25,15 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
     let mode: Mode
 
     /// The fake when the process was launched with `-uitest-passkey <mode>`, else nil.
+    /// Debug builds only: a Release build never takes the fake.
     static func fromLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> FakePasskeyService? {
+        #if !DEBUG
+        return nil
+        #else
         guard let index = arguments.firstIndex(of: launchArgument), arguments.indices.contains(index + 1),
               let mode = Mode(rawValue: arguments[index + 1]) else { return nil }
         return FakePasskeyService(mode: mode)
+        #endif
     }
 
     func register(userName: String, userHandle: Data) async throws -> PasskeyRegistration {

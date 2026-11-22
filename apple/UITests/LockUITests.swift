@@ -138,6 +138,34 @@ final class LockUITests: XCTestCase {
         XCTAssertTrue(waitGone(lockScreen, timeout: 3))
     }
 
+    /// The lock window sits above sheets: an open sheet (export, with the keyboard up) is covered
+    /// after a relock and cannot be used.
+    func testLockCoversOpenSheet() {
+        launch(["-uitest-passkey", "ok", "-uitest-lockseed", "-uitest-deviceauth", "fail", "-lockEnabled", "YES", "-lockDelay", "0"])
+        XCTAssertTrue(waitGone(lockScreen))
+        app.tabBars.buttons["Réglages"].tap()
+        let export = app.buttons["Exporter mon identité"]
+        for _ in 0..<8 where !export.isHittable { app.swipeUp() }
+        export.tap()
+        let cancel = app.buttons["Annuler"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.isHittable)
+        relock()
+        XCTAssertTrue(unlockButton.isHittable)
+        XCTAssertFalse(cancel.isHittable, "the sheet must be under the lock")
+        unlockButton.tap()
+        XCTAssertTrue(waitGone(lockScreen))
+        XCTAssertTrue(cancel.isHittable, "the sheet is still there after the unlock")
+    }
+
+    /// Setting the clock back must not skip the relock: the wall clock goes back 2 h while the
+    /// delay is 1 h, so the elapsed wall time is negative.
+    func testRelockWhenClockGoesBack() {
+        launch(["-uitest-passkey", "ok", "-uitest-lockseed", "-uitest-deviceauth", "fail", "-lockEnabled", "YES", "-lockDelay", "3600", "-uitest-clockskew", "-7200"])
+        XCTAssertTrue(waitGone(lockScreen))
+        relock()
+    }
+
     func testEnableAndDisableInSettings() {
         launch(["-uitest-passkey", "fail", "-uitest-deviceauth", "ok", "-lockEnabled", "NO"])
         openSettingsToggle()

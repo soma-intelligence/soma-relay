@@ -57,25 +57,21 @@ struct RootView: View {
                 BannerView()
             }
         }
-        .overlay { lockOverlay }
         .fullScreenCover(isPresented: Binding(get: { model.calls.presented }, set: { model.calls.presented = $0 })) {
             CallView()
         }
-    }
-
-    private var lockShown: Bool { model.phase != .onboarding && model.lock.enabled && model.lock.isLocked }
-
-    /// The lock screen, and the same screen as a privacy cover over the app switcher snapshot.
-    @ViewBuilder private var lockOverlay: some View {
-        if model.phase != .onboarding, model.lock.enabled {
-            if model.lock.isLocked {
-                LockView(lock: model.lock)
-                    .transition(.opacity)
-            } else if scenePhase != .active {
-                LockView(lock: model.lock, coverOnly: true)
-            }
+        .background {
+            // The lock lives in its own window above every sheet, cover and dialog (CallView too).
+            LockWindowHost(
+                lock: model.lock,
+                visible: lockGate && (model.lock.isLocked || scenePhase != .active),
+                coverOnly: !model.lock.isLocked,
+                sceneActive: scenePhase == .active)
         }
     }
+
+    private var lockGate: Bool { model.phase != .onboarding && model.lock.enabled }
+    private var lockShown: Bool { lockGate && model.lock.isLocked }
 }
 
 struct MainTabs: View {

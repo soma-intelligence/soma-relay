@@ -92,6 +92,9 @@ final class LockController {
     @ObservationIgnored private let device: any DeviceAuthenticating
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var backgroundedAt: Date?
+    @ObservationIgnored private var backgroundedUptime: UInt64?
+    /// UI tests only (Debug): `-uitest-clockskew <seconds>` moves the wall clock seen on return.
+    @ObservationIgnored private let wallClockSkew: TimeInterval
     @ObservationIgnored private var autoStarted = false
 
     init(
@@ -102,6 +105,7 @@ final class LockController {
         self.passkeys = passkeys
         self.device = device
         self.defaults = defaults
+        wallClockSkew = Self.debugClockSkew()
         let on = defaults.bool(forKey: Self.enabledKey)
         enabled = on
         isLocked = on
@@ -184,20 +188,41 @@ final class LockController {
 
     // MARK: Scene phase
 
-    func didEnterBackground(at date: Date) {
+    func didEnterBackground(at date: Date, uptime: UInt64 = LockController.monotonicNow()) {
         guard enabled, backgroundedAt == nil else { return }
         backgroundedAt = date
+        backgroundedUptime = uptime
     }
 
-    func willEnterForeground(at date: Date) {
+    func willEnterForeground(at date: Date, uptime: UInt64 = LockController.monotonicNow()) {
         guard let since = backgroundedAt else { return }
+        let sinceUptime = backgroundedUptime
         backgroundedAt = nil
-        guard enabled, delay != .never else { return }
-        if date.timeIntervalSince(since) >= TimeInterval(delay.rawValue) {
+        backgroundedUptime = nil
+        guard enabled else { return }
+        let wall = date.addingTimeInterval(wallClockSkew).timeIntervalSince(since)
+        let monotonic = sinceUptime.map { uptime >= $0 ? TimeInterval(uptime - $0) / 1e9 : -1 }
+        if Self.shouldRelock(delay: delay, wallElapsed: wall, monotonicElapsed: monotonic) {
             isLocked = true
             showsDeviceFallback = false
             failed = false
         }
+    }
+
+    /// Relock rule. The monotonic clock counts sleep and ignores clock changes; the wall clock is
+    /// the fallback. Any sign of tampering (negative elapsed time on either clock) or either clock
+    /// past the delay locks.
+    nonisolated static func shouldRelock(delay: RelockDelay, wallElapsed: TimeInterval, monotonicElapsed: TimeInterval?) -> Bool {
+        guard delay != .never else { return false }
+        let limit = TimeInterval(delay.rawValue)
+        if wallElapsed < 0 || wallElapsed >= limit { return true }
+        if let monotonicElapsed, monotonicElapsed < 0 || monotonicElapsed >= limit { return true }
+        return false
+    }
+
+    /// Nanoseconds on `CLOCK_MONOTONIC` (Darwin: keeps counting while the device sleeps).
+    nonisolated static func monotonicNow() -> UInt64 {
+        clock_gettime_nsec_np(CLOCK_MONOTONIC)
     }
 
     // MARK: Stored passkey data (single writer)
@@ -235,6 +260,7 @@ final class LockController {
         showsDeviceFallback = false
         failed = false
         backgroundedAt = nil
+        backgroundedUptime = nil
     }
 
     // MARK: Internals
@@ -263,6 +289,15 @@ final class LockController {
             }
             return .needsFallback
         }
+    }
+
+    private static func debugClockSkew(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> TimeInterval {
+        #if DEBUG
+        guard let index = arguments.firstIndex(of: "-uitest-clockskew"), arguments.indices.contains(index + 1) else { return 0 }
+        return TimeInterval(arguments[index + 1]) ?? 0
+        #else
+        return 0
+        #endif
     }
 
     nonisolated static func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
