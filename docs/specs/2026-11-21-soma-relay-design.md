@@ -162,7 +162,7 @@ channel), the node mailbox, then queues (courier) and offers SMS.
 - WebRTC data channel P2P between online peers after a signalling exchange through any
   transport.
 - Encrypted SMS (iOS): when nothing else works, the app opens the SMS composer prefilled with
-  `https://relay.somalabs.me/m#<base64url envelope>` (or `somarelay://m/...`); the receiver
+  `https://hushrelay.app/m#<base64url envelope>` (or `somarelay://m/...`); the receiver
   taps the link and the app ingests it. Text only, size-limited (one envelope <= 1 KiB padded).
   iOS never lets an app send SMS silently, so the user taps Send.
 

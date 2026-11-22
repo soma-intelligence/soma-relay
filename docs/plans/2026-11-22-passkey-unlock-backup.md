@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Relying party id `relay.somalabs.me`. AASA app id `M968YV4J8W.me.somalabs.relay`.
+- Relying party id `hushrelay.app`. AASA app id `M968YV4J8W.me.somalabs.relay`.
 - Salts: `first = SHA-256("soma-relay/unlock/v1")`, `second = SHA-256("soma-relay/backup/v1")`.
 - `unlock_key = HKDF-SHA256(p_first, salt "", info "soma-relay unlock v1", 32)`; `vault_key = HKDF-SHA256(p_second, salt "", info "soma-relay vault v1", 32)`; `vault_id = hex(SHA-256("soma-relay vault id v1" || credential_id))`.
 - Blob: `"RVB1" || nonce(12) || AES-256-GCM(vault_key, nonce, plaintext, aad = vault_id ASCII)`, max 1 MiB.
@@ -21,7 +21,7 @@
 - Relock delays: immediately, 1 min (default), 15 min, 1 h, never.
 - Vault retention: 400 days since last write.
 - Backup upload debounce: 10 s, plus on going to background.
-- UI copy in French, "tu" not used in Relay (existing copy uses "vous"); no em dash anywhere.
+- UI copy in French with "tu" (existing iOS and web copy use "tu"); no em dash anywhere.
 - Commits as `Soma Labs <opensource@somalabs.me>`, explicit paths only, no attribution lines, no worktrees.
 - OnePass work goes on its own branch from `origin/main` in the OnePass repo (the checkout is on `feat/guarded-kit` with uncommitted files that are not ours: do not touch them; use `git stash` only if the owner agrees, otherwise a separate clone in the scratchpad).
 
@@ -62,14 +62,14 @@ Spec section 5 stores a synced random `prfSeed` per passkey. This plan derives i
 **Files:**
 - Modify: `crates/relay-node/src/http.rs` (route `GET /.well-known/apple-app-site-association`, `Content-Type: application/json`, body from config `RELAY_AASA_APP_ID`, default `M968YV4J8W.me.somalabs.relay`)
 - Modify: `deploy/Caddyfile` (`{$RELAY_HOST}` accepts a list: `{$RELAY_HOSTS}`), `deploy/README.md`
-- Modify: `apple/App/AppConfig.swift` and `web/src/net/*` default node URL to `https://relay.somalabs.me` (stored URLs untouched)
+- Modify: `apple/App/AppConfig.swift` and `web/src/net/*` default node URL to `https://hushrelay.app` (stored URLs untouched)
 - Test: `crates/relay-node/tests/node.rs`
 
 - [ ] **Step 1: Failing test** `aasa_served`: GET returns 200, JSON `{"webcredentials":{"apps":["M968YV4J8W.me.somalabs.relay"]}}`, content type `application/json`, not the SPA index.
 - [ ] **Step 2: Run** `cargo test -p relay-node --test node aasa_served`, expect FAIL (SPA HTML).
-- [ ] **Step 3: Implement**, run, PASS. Commit `relay-node: apple-app-site-association for relay.somalabs.me`.
-- [ ] **Step 4: DNS.** Check for GoDaddy API access (`onepass` MCP search "godaddy"). With access: add `CNAME relay -> somarelay.westus2.cloudapp.azure.com`. Without: ask the owner to add it, and continue with other tasks. Verify: `dig +short relay.somalabs.me` returns the Azure name.
-- [ ] **Step 5: Deploy** (recipe in memory `soma-relay.md`): new image tag, `RELAY_HOSTS="somarelay.westus2.cloudapp.azure.com, relay.somalabs.me"` in `~/relay/.env`, `docker compose up -d`. Verify `curl -s https://relay.somalabs.me/.well-known/apple-app-site-association` prints the JSON and `curl -s https://relay.somalabs.me/healthz` is OK.
+- [ ] **Step 3: Implement**, run, PASS. Commit `relay-node: apple-app-site-association for hushrelay.app`.
+- [ ] **Step 4: DNS.** Once the owner has bought `hushrelay.app`: apex A record to `40.64.127.19` (VM static IP). Verify: `dig +short hushrelay.app` returns the IP.
+- [ ] **Step 5: Deploy** (recipe in memory `soma-relay.md`): new image tag, `RELAY_HOSTS="somarelay.westus2.cloudapp.azure.com, hushrelay.app"` in `~/relay/.env`, `docker compose up -d`. Verify `curl -s https://hushrelay.app/.well-known/apple-app-site-association` prints the JSON and `curl -s https://hushrelay.app/healthz` is OK.
 
 ### Task 3: `relay-core` vault crypto, exposed to Swift and the web
 
@@ -106,7 +106,7 @@ Spec section 5 stores a synced random `prfSeed` per passkey. This plan derives i
 
 **Files:**
 - Create: `apple/App/Core/Passkey/PasskeyService.swift`, `apple/App/Core/Passkey/FakePasskeyService.swift` (selected by launch argument `-uitest-passkey ok|noprf|fail`)
-- Modify: `apple/App/SomaRelay.entitlements` (`com.apple.developer.associated-domains` = `webcredentials:relay.somalabs.me`), `apple/project.yml`
+- Modify: `apple/App/SomaRelay.entitlements` (`com.apple.developer.associated-domains` = `webcredentials:hushrelay.app`), `apple/project.yml`
 - Test: UI tests in Task 6 and 7 use the fake
 
 **Interfaces:**
@@ -123,7 +123,7 @@ Spec section 5 stores a synced random `prfSeed` per passkey. This plan derives i
 - [ ] **Step 1: Implement** the service around `ASAuthorizationController` with a continuation; map `ASAuthorizationError.canceled` to `.cancelled`, "no credentials" to `.noCredential`.
 - [ ] **Step 2: Enable** Associated Domains on App ID `me.somalabs.relay` (developer.apple.com, needs the owner signed in to the browser pane) and refresh the provisioning profile. If the owner is not signed in, keep the entitlement and note the blocker; the simulator build still runs with the fake.
 - [ ] **Step 3: Verify** iOS build passes; on device later: Settings test in Task 7.
-- [ ] **Step 4: Commit** `ios: passkey service with PRF and the relay.somalabs.me association`.
+- [ ] **Step 4: Commit** `ios: passkey service with PRF and the hushrelay.app association`.
 
 ### Task 6: iOS lock screen
 
@@ -210,17 +210,17 @@ Spec section 5 stores a synced random `prfSeed` per passkey. This plan derives i
 
 **Interfaces:**
 - Consumes: WASM `vaultKey`, `vaultId`, `sealVault`, `openVault`, `signVault`, salts; Task 1 routes.
-- Produces: `registerPasskey(userName: string, userHandle: Uint8Array): Promise<{credentialId: Uint8Array, prf: boolean}>`, `assertPasskey(credentialId?: Uint8Array): Promise<{credentialId: Uint8Array, first?: Uint8Array, second?: Uint8Array}>`, `prfAvailable(): Promise<boolean>`. Vault key kept in IndexedDB next to the engine state (same protection as the state). Passkey UI hidden when `location.hostname !== 'relay.somalabs.me'` and not `localhost`, or when PRF is unavailable.
+- Produces: `registerPasskey(userName: string, userHandle: Uint8Array): Promise<{credentialId: Uint8Array, prf: boolean}>`, `assertPasskey(credentialId?: Uint8Array): Promise<{credentialId: Uint8Array, first?: Uint8Array, second?: Uint8Array}>`, `prfAvailable(): Promise<boolean>`. Vault key kept in IndexedDB next to the engine state (same protection as the state). Passkey UI hidden when `location.hostname !== 'hushrelay.app'` and not `localhost`, or when PRF is unavailable.
 
 - [ ] **Step 1: Failing e2e** `passkey-backup.spec.ts` using a CDP virtual authenticator (`WebAuthn.addVirtualAuthenticator` with `protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true`): create account A and contact B, exchange a message, A sets up the passkey, copy the credential to a new context's authenticator (`WebAuthn.getCredentials` then `addCredential`), restore there, same fingerprint, send a message to B and B receives it. Second test: authenticator with `hasPrf: false` shows "Votre gestionnaire ne prend pas en charge la sauvegarde".
-- [ ] **Step 2: Run** `RELAY_NODE_URL=http://127.0.0.1:8099 pnpm e2e passkey-backup`, FAIL. On localhost the RP id is `localhost` (dev only), production uses `relay.somalabs.me`.
+- [ ] **Step 2: Run** `RELAY_NODE_URL=http://127.0.0.1:8099 pnpm e2e passkey-backup`, FAIL. On localhost the RP id is `localhost` (dev only), production uses `hushrelay.app`.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the full suite `pnpm e2e` locally (all PASS), then `pnpm lint` and `pnpm build`.
 - [ ] **Step 5: Commit** `web: passkey backup and restore`.
 
 ### Task 12: Ship and record
 
-- [ ] **Step 1:** Rebuild and deploy the node image with the web build (Task 2 recipe). Run `RELAY_NODE_URL=https://relay.somalabs.me pnpm e2e`: all PASS.
+- [ ] **Step 1:** Rebuild and deploy the node image with the web build (Task 2 recipe). Run `RELAY_NODE_URL=https://hushrelay.app pnpm e2e`: all PASS.
 - [ ] **Step 2:** Push soma-relay `main`. Bump the iOS build number, archive and upload (needs Associated Domains on the profile, Task 5 Step 2).
 - [ ] **Step 3:** Update `README.md` (passkey section) and memory `soma-relay.md` (vault routes, domain, what is device-verified and what is not).
 - [ ] **Step 4:** Owner device checks list in the final report: passkey setup with OnePass on the iPhone, unlock after 1 min, restore on a second device, OnePass PRF on macOS Safari.

@@ -10,8 +10,8 @@ nonisolated enum Relay {
     static let prfSaltUnlock: Data = RelayCore.prfSaltUnlock()
     /// PRF salt of the backup output, `SHA-256("soma-relay/backup/v1")` (relay-core).
     static let prfSaltBackup: Data = RelayCore.prfSaltBackup()
-    /// WebAuthn relying party, bound to the app by `webcredentials:relay.somalabs.me`.
-    static let passkeyRelyingParty = "relay.somalabs.me"
+    /// WebAuthn relying party, bound to the app by `webcredentials:hushrelay.app`.
+    static let passkeyRelyingParty = "hushrelay.app"
 }
 
 /// Result of a passkey registration.
@@ -32,7 +32,7 @@ nonisolated struct PasskeyAssertion: Sendable, Equatable {
 nonisolated enum PasskeyFailure: Error, Sendable, Equatable {
     /// The person dismissed the system sheet.
     case cancelled
-    /// No passkey for relay.somalabs.me on this device (or the one asked for is gone).
+    /// No passkey for hushrelay.app on this device (or the one asked for is gone).
     case noCredential
     /// Passkeys cannot run here (no association, no passcode, request refused, unknown error).
     case notAvailable
@@ -49,7 +49,7 @@ enum PasskeyService {
     static let current: any PasskeyProviding = FakePasskeyService.fromLaunchArguments() ?? PlatformPasskeyService()
 }
 
-/// Platform passkeys (iCloud Keychain or another provider) on relay.somalabs.me with the PRF extension.
+/// Platform passkeys (iCloud Keychain or another provider) on hushrelay.app with the PRF extension.
 /// Nothing is verified server side: the challenge is random and only the PRF outputs are used.
 final class PlatformPasskeyService: PasskeyProviding {
     /// A `.canceled` error that arrives faster than this, on an assertion run with

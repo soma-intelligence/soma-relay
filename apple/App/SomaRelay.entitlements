@@ -6,7 +6,7 @@
 	<string>$(APS_ENVIRONMENT)</string>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>webcredentials:relay.somalabs.me</string>
+		<string>webcredentials:hushrelay.app</string>
 	</array>
 </dict>
 </plist>

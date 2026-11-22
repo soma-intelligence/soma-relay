@@ -86,7 +86,7 @@ export function AddContactSheet({ onClose, onAdded }: { onClose: () => void; onA
               id="add-handle"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="ines@relay.somalabs.me"
+              placeholder="ines@hushrelay.app"
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}

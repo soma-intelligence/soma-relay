@@ -8,13 +8,13 @@ The design uses a standard passkey with the WebAuthn PRF extension. OnePass stor
 
 Owner rulings (2026-11-22):
 
-- Relying party domain: `relay.somalabs.me`.
+- Relying party domain: `hushrelay.app` (first `relay.somalabs.me`, changed the same day: Relay gets its own identity, not tied to Soma Labs; the app name stays Soma Relay).
 - A restore brings back identity, contacts, groups and channels. No message history in v1.
 - Relock delay is a setting: immediately, 1 min (default), 15 min, 1 h, never.
 
 ## 1. The passkey
 
-- Relying party id `relay.somalabs.me`. User name: the handle when there is one, else the display name. User handle: 16 random bytes, kept in the engine metadata.
+- Relying party id `hushrelay.app`. User name: the handle when there is one, else the display name. User handle: 16 random bytes, kept in the engine metadata.
 - Created with `prf` requested, `residentKey: required`, `userVerification: required`.
 - Created at onboarding (step "Protéger avec un passkey", skippable) and from Settings > Sécurité for existing accounts.
 - Relay stores the credential id (UserDefaults, not secret) to pass it in `allowCredentials` on unlock.
@@ -81,14 +81,14 @@ The current export writes `relaystate1:<base64 state>` in clear. It becomes `rel
 
 ## 4. Domain and app association
 
-- DNS: `relay.somalabs.me` CNAME to the VM (`somarelay.westus2.cloudapp.azure.com`). The `somalabs.me` zone is at GoDaddy (`domaincontrol.com`); if there is no API access, the owner adds the record.
-- TLS: the VM reverse proxy gets a certificate for `relay.somalabs.me` next to the Azure name. Both names keep serving the node and the web app.
+- Domain: `hushrelay.app`, independent of Soma Labs (owner ruling 2026-11-22). Apex A record to the VM static IP `40.64.127.19`. Bought by the owner (Vercel registrar quote: $9.99 first year, $15 renewal); until then nothing on this domain resolves.
+- TLS: the VM reverse proxy gets a certificate for `hushrelay.app` next to the Azure name. Both names keep serving the node and the web app.
 - The node serves `/.well-known/apple-app-site-association`:
   ```
   { "webcredentials": { "apps": ["M968YV4J8W.me.somalabs.relay"] } }
   ```
-- The iOS app gets the entitlement `com.apple.developer.associated-domains` = `webcredentials:relay.somalabs.me` (App ID capability on developer.apple.com).
-- Clients default to `https://relay.somalabs.me` as node URL. Existing installs keep their stored URL.
+- The iOS app gets the entitlement `com.apple.developer.associated-domains` = `webcredentials:hushrelay.app` (App ID capability on developer.apple.com).
+- Clients default to `https://hushrelay.app` as node URL. Existing installs keep their stored URL.
 
 ## 5. OnePass: PRF in the credential provider
 
@@ -105,7 +105,7 @@ OnePass already provides passkeys (`ProvidesPasskeys`) but does not answer the P
 
 ## 6. Web
 
-- Same passkey on the same relying party, through WebAuthn with the `prf` extension (Chrome, Safari 18+, Firefox with a supporting provider). Requires the web app served from `relay.somalabs.me`.
+- Same passkey on the same relying party, through WebAuthn with the `prf` extension (Chrome, Safari 18+, Firefox with a supporting provider). Requires the web app served from `hushrelay.app`.
 - Web gets backup and restore in this work. The web lock screen is out of scope.
 - Browsers without PRF: the passkey step is hidden and the `.relaykey` export remains.
 
@@ -120,7 +120,7 @@ OnePass already provides passkeys (`ProvidesPasskeys`) but does not answer the P
 
 ## 8. Order of work
 
-1. Node: vault routes, AASA, `relay.somalabs.me` DNS and TLS.
+1. Node: vault routes, AASA, `hushrelay.app` DNS and TLS.
 2. Shared crypto (core vectors), then iOS: passkey creation, lock screen, backup upload, restore, `.relaykey` v2.
 3. OnePass: PRF in the credential provider (OnePass repo, separate PR).
 4. Web: passkey, backup, restore, e2e.
