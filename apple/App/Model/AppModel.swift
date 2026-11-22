@@ -357,7 +357,10 @@ final class AppModel {
             relays = broadcastMesh(core.retagForMesh(envelope: env, fp: contact.fingerprint, nowMs: Clock.nowMs))
         }
         if nodeEnabled, node.send(envelope: env, to: contact.mailbox) {
-            return RouteResult(transport: relays > 0 && nodeOnline.contains(contact.mailbox) == false ? .mesh : .node, status: .sent, relays: relays)
+            // The node took it. Say MESH only when this contact was last heard on the mesh and the
+            // node does not see them online: other mesh phones (relays > 0) may not lead to them.
+            let viaMesh = relays > 0 && routes[contact.fingerprint]?.transport == .mesh && !nodeOnline.contains(contact.mailbox)
+            return RouteResult(transport: viaMesh ? .mesh : .node, status: .sent, relays: relays)
         }
         // Keep it for the node and for phones met later.
         enqueue(env, mailbox: contact.mailbox, peer: contact.fingerprint, messageId: messageId)
@@ -827,7 +830,16 @@ final class AppModel {
     func handle(url: URL) {
         let text = url.absoluteString
         if text.hasPrefix("somarelay://add/") {
-            Task { _ = try? await addContact(from: text) }
+            // A link can cold-launch the app before the scene task runs start().
+            start()
+            Task {
+                do {
+                    let added = try await addContact(from: text)
+                    banner = added.name + " ajouté."
+                } catch {
+                    banner = error.message
+                }
+            }
             return
         }
         var payload: String?
