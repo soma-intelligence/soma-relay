@@ -287,6 +287,19 @@ ICE servers for WebRTC calls, ready to pass to `new RTCPeerConnection({ iceServe
 The operator sets the list with `RELAY_ICE_JSON` (for example to add a TURN server with
 credentials); see `deploy/README.md`.
 
+When `RELAY_TURN_SECRET` and `RELAY_TURN_URLS` are both set, the node appends one TURN
+entry with short-lived credentials in coturn's `use-auth-secret` scheme (the TURN REST API),
+generated fresh on every request:
+
+```json
+{"urls":["turn:turn.example.org:3478?transport=udp","turns:turn.example.org:5349?transport=tcp"],
+ "username":"<expiry unix seconds>:<random 8-byte hex>",
+ "credential":"<base64(HMAC-SHA1(RELAY_TURN_SECRET, username))>"}
+```
+
+The response carries `Cache-Control: no-store`. Clients fetch the list again before each
+call, so the credentials are always fresh. The node never logs the secret or the credentials.
+
 ### `GET /v1/push/vapid`
 
 The node's VAPID public key for `PushManager.subscribe({applicationServerKey})`:
@@ -359,9 +372,15 @@ Every other path serves the built web client from the node's web directory, with
 | `RELAY_APNS_TEAM_ID` | Apple developer team id |
 | `RELAY_APNS_TOPIC` | iOS bundle id |
 | `RELAY_PREVIEW` | `true` (default) or `false` to turn `/v1/preview` off |
+| `RELAY_TURN_SECRET` | coturn `static-auth-secret` shared with a coturn running `use-auth-secret` (flag `--turn-secret`) |
+| `RELAY_TURN_URLS` | TURN URLs, comma separated, for example `turn:host:3478?transport=udp,turn:host:3478?transport=tcp,turns:host:5349?transport=tcp` (flag `--turn-urls`) |
+| `RELAY_TURN_TTL` | lifetime of the TURN credentials in seconds, default `86400` (flag `--turn-ttl`) |
 
 APNs is on only when the four `RELAY_APNS_*` settings are all set; the node refuses to start
 when only some are set or the key does not load. Web Push needs no setting.
+
+TURN is on only when `RELAY_TURN_SECRET` and `RELAY_TURN_URLS` are both set; with only one
+of them the node logs a warning and serves the STUN list alone.
 
 ## Privacy notes
 

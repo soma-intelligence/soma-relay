@@ -95,7 +95,9 @@ async fn healthz(State(state): State<Arc<NodeState>>) -> Response {
 }
 
 async fn ice(State(state): State<Arc<NodeState>>) -> Response {
-    Json(json!({"iceServers": state.ice})).into_response()
+    let mut r = Json(json!({"iceServers": state.ice_servers()})).into_response();
+    r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r
 }
 
 async fn vapid(State(state): State<Arc<NodeState>>) -> Response {

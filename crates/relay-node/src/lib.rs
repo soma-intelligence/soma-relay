@@ -10,6 +10,7 @@ pub mod preview;
 pub mod push;
 pub mod ratelimit;
 pub mod store;
+pub mod turn;
 pub mod util;
 pub mod verifier;
 pub mod ws;
@@ -32,6 +33,7 @@ use crate::push::apns::Apns;
 use crate::push::webpush::Vapid;
 use crate::ratelimit::IpLimiter;
 use crate::store::Store;
+use crate::turn::TurnConfig;
 use crate::verifier::{CardVerifier, PermissiveVerifier};
 
 /// How long envelopes and blobs are kept: 14 days.
@@ -70,6 +72,20 @@ pub struct Config {
     /// ICE servers as JSON (an array of RTCIceServer, or an object with `iceServers`).
     #[arg(long, env = "RELAY_ICE_JSON")]
     pub ice_json: Option<String>,
+
+    /// coturn `static-auth-secret` (TURN REST API). With `--turn-urls`, `/v1/ice` adds a TURN
+    /// entry with fresh short-lived credentials on every request.
+    #[arg(long, env = "RELAY_TURN_SECRET", hide_env_values = true)]
+    pub turn_secret: Option<String>,
+
+    /// TURN URLs, comma separated, for example
+    /// `turn:host:3478?transport=udp,turn:host:3478?transport=tcp,turns:host:5349?transport=tcp`.
+    #[arg(long, env = "RELAY_TURN_URLS")]
+    pub turn_urls: Option<String>,
+
+    /// Lifetime of the TURN credentials, in seconds.
+    #[arg(long, env = "RELAY_TURN_TTL", default_value_t = 86400)]
+    pub turn_ttl: u64,
 
     /// Take the client IP from the first `X-Forwarded-For` entry (only behind a trusted proxy).
     #[arg(long, env = "RELAY_TRUST_PROXY", default_value_t = false)]
@@ -114,6 +130,9 @@ impl Config {
             data_dir,
             public_url: None,
             ice_json: None,
+            turn_secret: None,
+            turn_urls: None,
+            turn_ttl: 86400,
             trust_proxy: false,
             rate_per_sec: 0.0,
             rate_burst: 100.0,
@@ -159,6 +178,7 @@ pub struct NodeState {
     pub(crate) next_conn: AtomicU64,
     pub(crate) http_limiter: IpLimiter,
     pub(crate) ice: serde_json::Value,
+    pub(crate) turn: Option<TurnConfig>,
     pub(crate) notifier: Notifier,
     pub(crate) net: GuardedClient,
     pub(crate) previewer: Previewer,
@@ -183,6 +203,9 @@ impl NodeState {
             config.apns_topic.as_deref(),
         )?;
         tracing::info!(apns = apns.is_some(), "push senders ready");
+        if config.turn_secret.is_some() != config.turn_urls.is_some() {
+            tracing::warn!("TURN is off: set both RELAY_TURN_SECRET and RELAY_TURN_URLS");
+        }
         let notifier = Notifier::new(apns, Vapid::load_or_create(&config.data_dir)?);
         let net = GuardedClient::new(concat!("SomaRelayNode/", env!("CARGO_PKG_VERSION"), " (link preview)"));
         let (shutdown_tx, shutdown) = watch::channel(false);
@@ -191,6 +214,7 @@ impl NodeState {
             net,
             previewer: Previewer::default(),
             ice: config.ice_servers(),
+            turn: TurnConfig::new(config.turn_secret.as_deref(), config.turn_urls.as_deref(), config.turn_ttl),
             http_limiter: IpLimiter::new(config.rate_per_sec, config.rate_burst),
             config,
             store,
@@ -200,6 +224,23 @@ impl NodeState {
             shutdown,
             shutdown_tx,
         }))
+    }
+
+    /// The ICE servers handed to a client: the configured list, plus a TURN entry with fresh
+    /// credentials when TURN is configured.
+    pub(crate) fn ice_servers(&self) -> serde_json::Value {
+        let Some(turn) = &self.turn else { return self.ice.clone() };
+        let mut list = match &self.ice {
+            serde_json::Value::Array(a) => a.clone(),
+            serde_json::Value::Null => Vec::new(),
+            other => vec![other.clone()],
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        list.push(turn.ice_server(now));
+        serde_json::Value::Array(list)
     }
 
     pub(crate) fn blob_path(&self, sha: &str) -> PathBuf {

@@ -422,6 +422,48 @@ async fn misc_http() {
 }
 
 #[tokio::test]
+async fn ice_turn_credentials() {
+    // Unset: the STUN list only.
+    let node = Node::start().await;
+    let http = reqwest::Client::new();
+    let r = http.get(node.http("/v1/ice")).send().await.unwrap();
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    let ice: Value = r.json().await.unwrap();
+    let list = ice["iceServers"].as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    assert!(list.iter().all(|s| s.get("username").is_none()));
+
+    // Set: the STUN list plus one TURN entry with fresh credentials.
+    let node = Node::start_with(|c| {
+        c.turn_secret = Some("north".into());
+        c.turn_urls = Some("turn:t.example:3478?transport=udp,turns:t.example:5349?transport=tcp".into());
+        c.turn_ttl = 3600;
+    })
+    .await;
+    let fetch = || async {
+        let r = http.get(node.http("/v1/ice")).send().await.unwrap();
+        assert_eq!(r.headers()["cache-control"], "no-store");
+        r.json::<Value>().await.unwrap()["iceServers"].as_array().unwrap().clone()
+    };
+    let list = fetch().await;
+    assert_eq!(list.len(), 3);
+    assert!(list[0]["urls"].to_string().contains("stun.l.google.com"));
+    let turn = &list[2];
+    assert_eq!(
+        turn["urls"],
+        json!(["turn:t.example:3478?transport=udp", "turns:t.example:5349?transport=tcp"])
+    );
+    let user = turn["username"].as_str().unwrap();
+    let (exp, tag) = user.split_once(':').unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let exp: u64 = exp.parse().unwrap();
+    assert!(exp >= now + 3590 && exp <= now + 3610, "{exp} vs {now}");
+    assert_eq!(tag.len(), 16);
+    assert_eq!(turn["credential"], relay_node::turn::credential("north", user));
+    assert_ne!(fetch().await[2]["username"], turn["username"], "credentials are per request");
+}
+
+#[tokio::test]
 async fn malformed_frames() {
     let node = Node::start().await;
     let (ka, ma) = Client::identity(14);
