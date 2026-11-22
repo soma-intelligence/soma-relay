@@ -1,7 +1,8 @@
 // Document viewer, loaded on demand. Each renderer is its own dynamic import too:
 // PDF (pdf.js, pages and zoom), Word .docx (docx-preview), spreadsheets and CSV (SheetJS),
-// text and code as text, images and media inline. Presentations show the sender's thumbnail
-// and a download (no maintained open source renderer we can ship under the AGPL).
+// PowerPoint .pptx (our own reader in media/pptx.ts, drawn by PptxView), text and code as text,
+// images and media inline. Older presentation formats (.ppt, .key, .odp) show the sender's
+// thumbnail and a download.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { relay } from '../state/relay'
@@ -10,6 +11,7 @@ import { formatSize } from '../media/media'
 import { docType } from './Message'
 import { Close, Download, File, ZoomIn, ZoomOut } from './Icons'
 import { downloadBlob } from './common'
+import { SlidesView } from './PptxView'
 
 export default function DocViewer({ m, onClose }: { m: ChatMessage; onClose: () => void }) {
   const a = m.attachment!
@@ -44,6 +46,8 @@ export default function DocViewer({ m, onClose }: { m: ChatMessage; onClose: () 
   const failPdf = useCallback(() => setError('Ce PDF ne s’ouvre pas ici.'), [])
   const failDocx = useCallback(() => setError('Ce document Word ne s’ouvre pas ici.'), [])
   const failSheet = useCallback(() => setError('Ce tableur ne s’ouvre pas ici.'), [])
+  const failSlides = useCallback(() => setError('Cette présentation ne s’ouvre pas ici.'), [])
+  const pptx = kind === 'slides' && (/\.pptx$/i.test(a.name ?? '') || a.mime.includes('presentationml.presentation'))
 
   let body: React.ReactNode
   if (error) body = <Fallback m={m} note={error} onSave={save} />
@@ -51,6 +55,7 @@ export default function DocViewer({ m, onClose }: { m: ChatMessage; onClose: () 
   else if (kind === 'pdf') body = <PdfView blob={blob} onFail={failPdf} />
   else if (kind === 'word' && /\.docx$/i.test(a.name ?? '.docx')) body = <DocxView blob={blob} onFail={failDocx} />
   else if (kind === 'sheet') body = <SheetView blob={blob} name={a.name ?? ''} onFail={failSheet} />
+  else if (pptx) body = <SlidesView blob={blob} onFail={failSlides} />
   else if (kind === 'text') body = <TextView blob={blob} />
   else if (kind === 'image') body = <div className="dv-center"><img className="dv-img" src={objUrl ?? ''} alt={a.name ?? ''} /></div>
   else if (kind === 'media')
@@ -78,7 +83,7 @@ export default function DocViewer({ m, onClose }: { m: ChatMessage; onClose: () 
           <b>{a.name ?? 'Document'}</b>
           <span className="mono">
             {formatSize(a.size)}
-            {a.pages ? ` · ${a.pages} page${a.pages > 1 ? 's' : ''}` : ''}
+            {a.pages ? ` · ${pageCount(a.pages, kind === 'slides')}` : ''}
           </span>
         </div>
         <button className="icon-btn" aria-label="Télécharger" onClick={save} disabled={!blob}>
@@ -88,6 +93,11 @@ export default function DocViewer({ m, onClose }: { m: ChatMessage; onClose: () 
       <div className="dv-body">{body}</div>
     </div>
   )
+}
+
+/** "3 pages" for documents, "3 diapos" for presentations. */
+function pageCount(n: number, slides: boolean): string {
+  return `${n} ${slides ? 'diapo' : 'page'}${n > 1 ? 's' : ''}`
 }
 
 function Fallback({ m, note, onSave }: { m: ChatMessage; note: string; onSave: () => void }) {

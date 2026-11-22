@@ -1208,6 +1208,92 @@ button.reply-quote span {
   padding: 0 12px 0 6px;
   color: var(--muted);
 }
+.pptx-scroll {
+  gap: 18px;
+}
+.pptx-slide {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scroll-margin-top: 6px;
+}
+.pptx-num {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 2px;
+}
+.pptx-slide.hidden-slide .pptx-box {
+  opacity: 0.55;
+}
+.pptx-box {
+  position: relative;
+}
+.pptx-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  overflow: hidden;
+  background: #fff;
+  color: #000;
+  font-family: Carlito, Calibri, 'Helvetica Neue', Arial, system-ui, sans-serif;
+  line-height: 1.2;
+  opacity: 0;
+  transition: opacity 0.25s;
+  -webkit-font-smoothing: antialiased;
+}
+.pptx-box.done .pptx-stage {
+  opacity: 1;
+}
+.pptx-item {
+  position: absolute;
+}
+.pptx-geom {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+}
+.pptx-line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+}
+.pptx-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: break-word;
+}
+.pptx-p {
+  margin: 0;
+}
+.pptx-bu {
+  display: inline-block;
+  text-indent: 0;
+}
+.pptx-pic {
+  overflow: hidden;
+}
+.pptx-pic img {
+  display: block;
+  object-fit: fill;
+  user-select: none;
+}
+.pptx-missing {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.04) 0 8px, rgba(0, 0, 0, 0.08) 8px 16px);
+}
+.pptx-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.pptx-table td {
+  overflow-wrap: break-word;
+}
 .docx-scroll {
   flex: 1;
   overflow: auto;

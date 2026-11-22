@@ -240,7 +240,7 @@ function FileCard({ m, onOpen }: { m: ChatMessage; onOpen: (m: ChatMessage) => v
           <span className="fname">{a.name ?? 'Fichier'}</span>
           <span className="fsize" style={{ display: 'block' }}>
             {label} · {formatSize(a.size)}
-            {a.pages ? ` · ${a.pages} page${a.pages > 1 ? 's' : ''}` : ''}
+            {a.pages ? ` · ${a.pages} ${kind === 'slides' ? 'diapo' : 'page'}${a.pages > 1 ? 's' : ''}` : ''}
           </span>
         </span>
       </span>

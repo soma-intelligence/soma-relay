@@ -5,6 +5,7 @@
 
 export const VIDEO_MAX_BYTES = 25 * 1024 * 1024
 export const FILE_MAX_BYTES = 100 * 1024 * 1024
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
 
 export interface PreparedMedia {
   bytes: Uint8Array
@@ -121,12 +122,23 @@ export async function prepareFile(file: File): Promise<PreparedMedia> {
 }
 
 /**
- * A document: PDFs get a first-page thumbnail and a page count from pdf.js, loaded on demand
- * so the main bundle stays small. Any failure sends the file without them.
+ * A document: PDFs get a first-page thumbnail and a page count from pdf.js, PowerPoint decks a
+ * first-slide thumbnail and a slide count from our pptx reader, both loaded on demand so the
+ * main bundle stays small. Any failure sends the file without them.
  */
 export async function prepareDocument(file: File): Promise<PreparedMedia> {
   const base = await prepareFile(file)
   const isPdf = base.mime === 'application/pdf' || /\.pdf$/i.test(file.name)
+  if (!isPdf && (base.mime === PPTX_MIME || /\.pptx$/i.test(file.name))) {
+    try {
+      const { pptxThumbnail } = await import('./pptx')
+      const t = await pptxThumbnail(base.bytes)
+      return { ...base, mime: PPTX_MIME, ...t }
+    } catch (e) {
+      console.info('pptx thumbnail failed', e)
+      return { ...base, mime: PPTX_MIME }
+    }
+  }
   if (!isPdf) return base
   try {
     const { pdfThumbnail } = await import('./pdf')
