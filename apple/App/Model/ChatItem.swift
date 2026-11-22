@@ -51,7 +51,7 @@ struct ChatItem: Identifiable, Equatable {
     }
 
     var time: String {
-        Date(timeIntervalSince1970: Double(message.ts) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+        Date(timeIntervalSince1970: Double(message.ts) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR")))
     }
 
     /// The mono line under the bubble (`MODIFIÉ · MESH 2 · LU`).

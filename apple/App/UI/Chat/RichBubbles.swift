@@ -220,7 +220,7 @@ struct LocationBubble: View {
 
     private func subtitle(live: Bool, wasLive: Bool) -> String {
         if live, let until = item.message.location?.liveUntil {
-            return "jusqu'à " + Date(timeIntervalSince1970: Double(until) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+            return "jusqu'à " + Date(timeIntervalSince1970: Double(until) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR")))
         }
         if let a = item.message.location?.accuracyM, a > 0 { return "précision \(Int(a.rounded())) m" }
         let c = AppModel.coordinate(of: item) ?? (0, 0)

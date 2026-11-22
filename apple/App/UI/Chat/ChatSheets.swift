@@ -326,9 +326,9 @@ struct MapViewer: View {
     private func detail(live: Bool, coord: (Double, Double)) -> String {
         var parts = [String(format: "%.5f, %.5f", coord.0, coord.1)]
         if live, let until = item.message.location?.liveUntil {
-            parts.append("jusqu'à " + Date(timeIntervalSince1970: Double(until) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
+            parts.append("jusqu'à " + Date(timeIntervalSince1970: Double(until) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR"))))
         } else if let ts = item.state.live?.ts ?? Optional(item.message.ts) {
-            parts.append(Date(timeIntervalSince1970: Double(ts) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
+            parts.append(Date(timeIntervalSince1970: Double(ts) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR"))))
         }
         return parts.joined(separator: " · ")
     }
