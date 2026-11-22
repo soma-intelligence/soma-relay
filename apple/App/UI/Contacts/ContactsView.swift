@@ -94,10 +94,11 @@ struct ContactsView: View {
 }
 
 struct ContactRow: View {
+    @Environment(AppModel.self) private var model
     let contact: ContactJSON
     var body: some View {
         HStack(spacing: 12) {
-            Avatar(name: contact.name, size: 42)
+            Avatar(name: contact.name, size: 42, photo: model.photo(for: contact.fingerprint))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(contact.name).font(.body.weight(.medium)).foregroundStyle(Theme.text)

@@ -104,9 +104,17 @@ struct CallView: View {
                     .rotationEffect(.degrees(rotation))
                     .padding(28)
                 Circle().fill(Color(UIColor(hex: 0x1A1E1B, alpha: 1))).padding(50)
-                Text(Avatar(name: model.name(of: call.peer)).initials)
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(ink)
+                if let photo = model.photo(for: call.peer) {
+                    Image(uiImage: photo)
+                        .resizable()
+                        .scaledToFill()
+                        .clipShape(Circle())
+                        .padding(50)
+                } else {
+                    Text(Avatar(name: model.name(of: call.peer)).initials)
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(ink)
+                }
             }
         }
         .accessibilityLabel("Niveau de voix de \(model.name(of: call.peer))")

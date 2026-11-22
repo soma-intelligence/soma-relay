@@ -358,7 +358,9 @@ struct ForwardSheet: View {
                     dismiss()
                 } label: {
                     HStack(spacing: 12) {
-                        Avatar(name: c.title, size: 40, tint: Theme.incoming, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil)
+                        Avatar(
+                            name: c.title, size: 40, tint: Theme.incoming, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil,
+                            photo: model.photo(of: c))
                         Text(c.title).foregroundStyle(Theme.text)
                         Spacer()
                         Image(systemName: "arrowshape.turn.up.right").foregroundStyle(Theme.secondary)

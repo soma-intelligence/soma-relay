@@ -232,7 +232,8 @@ struct ConversationRow: View {
         HStack(spacing: 12) {
             Avatar(
                 name: conversation.title, size: 50, tint: Theme.incoming,
-                icon: conversation.kind == .channel ? "number" : conversation.kind == .group ? "person.3.fill" : nil)
+                icon: conversation.kind == .channel ? "number" : conversation.kind == .group ? "person.3.fill" : nil,
+                photo: model.photo(of: conversation))
                 .overlay(alignment: .bottomTrailing) {
                     if conversation.kind == .direct, let peer = conversation.peer, model.contact(peer)?.verified == true {
                         Image(systemName: "checkmark.seal.fill")

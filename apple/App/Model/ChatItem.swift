@@ -19,8 +19,8 @@ struct ChatItem: Identifiable, Equatable {
     var isMine: Bool { sender == nil }
     var isDeleted: Bool { state.isDeleted }
     var isEdited: Bool { state.editedAt != nil && !isDeleted }
-    /// System lines (timer changes) are drawn centered, not as bubbles.
-    var isSystem: Bool { message.kind == .settings }
+    /// System lines (timer changes, group changes) are drawn centered, not as bubbles.
+    var isSystem: Bool { message.kind == .settings || message.kind == .groupOp }
 
     init(record: MessageRecord, senderName: String?, state: MessageState? = nil) {
         id = record.id

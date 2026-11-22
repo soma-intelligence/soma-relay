@@ -30,6 +30,12 @@ final class AppModel {
     /// A contact just added: the QR tile turns into the safety words for them.
     var justAdded: ContactJSON?
     var banner: String?
+    /// The glass banner for a message that lands in another conversation than the open one.
+    var messageBanner: MessageBanner?
+    /// Profile photos: contact fingerprint, "me", or "g:<group id>" -> image (spec section 6).
+    var photos: [String: UIImage] = [:]
+    /// Group names set by a `group-profile` (they override the core op log name).
+    var groupNames: [String: String] = [:]
     /// A conversation to open (notification tap, search hit), with an optional message to show.
     var openRequest: ChatRoute?
     /// Live location shares I am running: location message id -> conversation.
@@ -159,6 +165,7 @@ final class AppModel {
         meshRouter = core.makeMeshRouter()
         (core as? MockRelayCore)?.setHandle(handle.isEmpty ? nil : handle, node: nodeEnabled ? nodeURL : nil)
         if core.rotatePrekeyIfDue(nowMs: Clock.nowMs) { scheduleSave() }
+        loadPhotos()
         reloadContacts()
         reloadConversations()
         restartMesh()
@@ -319,24 +326,8 @@ final class AppModel {
                 let envs = try core.groupEncrypt(groupId: gid, appMessageJson: message.json())
                 scheduleSave()
                 var best: (transport: Transport, status: DeliveryStatus, relays: Int?) = (.local, .pending, nil)
-                // relay-core: sender-key distribution envelopes first, group envelope last. Send the
-                // keys first so members can open the message as soon as it lands.
-                for env in envs.dropLast() {
-                    guard let tag = core.envelopeTagHex(env), let member = contacts.first(where: { $0.mailbox == tag }) else { continue }
-                    _ = route(env, to: member, messageId: nil)
-                }
-                if let groupEnv = envs.last {
-                    let meshSent = broadcastMesh(groupEnv)
-                    var nodeSent = false
-                    let me = core.fingerprintHex()
-                    for (index, member) in group.members.enumerated() where member != me {
-                        guard let mailbox = group.mailboxes?[safe: index] ?? contact(member)?.mailbox else { continue }
-                        if nodeEnabled, node.send(envelope: groupEnv, to: mailbox) { nodeSent = true } else {
-                            enqueue(groupEnv, mailbox: mailbox, peer: member, messageId: message.id)
-                        }
-                    }
-                    if nodeSent { best = (.node, .sent, nil) } else if meshSent > 0 { best = (.mesh, .sent, meshSent) }
-                }
+                let sent = fanOutGroup(envs, group: group, messageId: message.id)
+                if sent.node { best = (.node, .sent, nil) } else if sent.mesh > 0 { best = (.mesh, .sent, sent.mesh) }
                 update(message.id, transport: best.transport, status: best.status, relays: best.relays)
             case .channel:
                 guard let name = conv.peer else { return }
@@ -350,7 +341,7 @@ final class AppModel {
         }
     }
 
-    private struct RouteResult {
+    struct RouteResult {
         var transport: Transport
         var status: DeliveryStatus
         var relays: Int?
@@ -358,7 +349,7 @@ final class AppModel {
 
     /// Router: open P2P link (mesh) and node mailbox; when neither is up, the outbox keeps it
     /// (courier) and the chat offers SMS.
-    private func route(_ env: Data, to contact: ContactJSON, messageId: String?) -> RouteResult {
+    func route(_ env: Data, to contact: ContactJSON, messageId: String?) -> RouteResult {
         guard let core else { return RouteResult(transport: .local, status: .failed) }
         var relays = 0
         if meshPeerCount > 0 {
@@ -373,13 +364,13 @@ final class AppModel {
         return RouteResult(transport: .local, status: .pending)
     }
 
-    @discardableResult private func broadcastMesh(_ env: Data) -> Int {
+    @discardableResult func broadcastMesh(_ env: Data) -> Int {
         guard let meshRouter, meshPeerCount > 0 else { return 0 }
         mesh.broadcast(meshRouter.framesFor(envelope: env, mtu: MeshTransport.mtu))
         return meshPeerCount
     }
 
-    private func enqueue(_ env: Data, mailbox: String, peer: String?, messageId: String?) {
+    func enqueue(_ env: Data, mailbox: String, peer: String?, messageId: String?) {
         db.enqueue(OutboxRecord(id: UUID().uuidString, messageId: messageId, mailbox: mailbox, peer: peer, envelope: env, createdAt: Clock.nowMs, attempts: 0, meshOnly: false))
     }
 
@@ -513,8 +504,14 @@ final class AppModel {
             }
         case .call:
             if let signal = message.call { calls.handle(signal, from: inbound.from) }
-        case .groupOp, .profile:
-            reloadContacts()
+        case .groupOp:
+            applyGroupOp(inbound)
+        case .profile:
+            applyProfile(inbound)
+        case .groupProfile:
+            applyGroupProfile(inbound)
+        case .groupLeave:
+            applyGroupLeave(inbound)
         case .reaction:
             applyReaction(inbound)
         case .edit:
@@ -551,7 +548,7 @@ final class AppModel {
         if let g = inbound.group {
             conversationId = Self.groupId(g)
             reloadContacts()
-            title = groups.first { $0.id == g }?.name ?? "Groupe"
+            title = groupNames[g] ?? groups.first { $0.id == g }?.name ?? "Groupe"
             kind = .group
             peer = g
         } else if let ch = inbound.channel {
@@ -586,6 +583,11 @@ final class AppModel {
             var receipt = AppMessage.make(.receipt)
             receipt.receipt = .init(of: [message.id], state: seen ? .read : .delivered, hops: hops)
             sendControl(receipt, to: inbound.from)
+            // The session is open: my profile goes once to this contact (spec section 6).
+            sendProfileIfNeeded(toContact: inbound.from)
+        }
+        if !seen, message.kind != .settings, kind != .channel {
+            showMessageBanner(conversationId: conversationId, from: inbound.from, kind: kind, title: title, preview: preview)
         }
         if seen {
             Haptics.soft()
@@ -608,6 +610,7 @@ final class AppModel {
         case .poll: "Sondage : " + (message.poll?.question ?? "")
         case .location: message.location?.liveUntil != nil ? "Position en direct" : "Position"
         case .settings: (message.settings?.expireS ?? 0) > 0 ? "Messages éphémères : " + timerLabel(message.settings?.expireS ?? 0) : "Messages éphémères désactivés"
+        case .groupOp: "Groupe mis à jour"
         default: ""
         }
     }
@@ -693,6 +696,8 @@ final class AppModel {
     }
 
     func rename(_ fp: String, to name: String) {
+        // A local rename wins over the name in the contact's `profile` from now on.
+        db.setValue(Data("1".utf8), for: "renamed:" + fp)
         core?.renameContact(fp: fp, name: name)
         scheduleSave()
         reloadContacts()
@@ -727,6 +732,8 @@ final class AppModel {
         let id = Self.groupId(gid)
         db.save(ConversationRecord(id: id, kind: .group, title: name, peer: gid, lastAt: Clock.nowMs, unread: 0, lastTransport: nil, previewSealed: SecretBox.shared.seal("Groupe créé")))
         reloadConversations()
+        storeSystem("created", in: id, from: nil)
+        sendProfileIfNeeded(toGroup: gid)
         return id
     }
 
@@ -755,9 +762,12 @@ final class AppModel {
     // MARK: Identity
 
     func setDisplayName(_ name: String) {
-        core?.setDisplayName(name)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != displayName else { return }
+        core?.setDisplayName(trimmed)
         scheduleSave()
         restartMesh()
+        broadcastProfile()
     }
 
     /// Publishes `handle` on the node directory. The node only accepts it from a mailbox that
@@ -804,6 +814,9 @@ final class AppModel {
         conversations = []
         channels = []
         routes = [:]
+        photos = [:]
+        groupNames = [:]
+        messageBanner = nil
         withAnimation(.smooth) { phase = .onboarding }
     }
 

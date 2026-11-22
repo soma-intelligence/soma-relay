@@ -184,6 +184,20 @@ final class AppDatabase {
         return sealed.flatMap { box.open($0) }
     }
 
+    /// Every opened value whose key starts with `prefix`, keyed by the rest of the key.
+    func values(prefix: String) -> [String: Data] {
+        let rows = (try? queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT key, value FROM kv WHERE substr(key, 1, ?) = ?", arguments: [prefix.count, prefix])
+        }) ?? []
+        var out: [String: Data] = [:]
+        for row in rows {
+            let key: String = row["key"]
+            let sealed: Data = row["value"]
+            if let plain = box.open(sealed) { out[String(key.dropFirst(prefix.count))] = plain }
+        }
+        return out
+    }
+
     // MARK: Conversations and messages
 
     func conversations() -> [ConversationRecord] {

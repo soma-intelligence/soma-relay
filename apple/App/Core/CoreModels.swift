@@ -11,6 +11,8 @@ nonisolated struct AppMessage: Codable, Equatable, Sendable {
         case edit, delete, poll, location, settings
         case pollVote = "poll-vote"
         case locationUpdate = "location-update"
+        case groupProfile = "group-profile"
+        case groupLeave = "group-leave"
         case unknown
 
         init(from decoder: Decoder) throws {
@@ -36,11 +38,19 @@ nonisolated struct AppMessage: Codable, Equatable, Sendable {
     var close: Bool?
     var location: Location?
     var settings: Settings?
+    /// `profile` (spec section 6): the sender's name and photo.
+    var profile: Profile?
+    /// `group-profile`: the group's name and photo, from an admin.
+    var groupProfile: Profile?
+    /// Synthetic `group-op` from the core: `{"id","event","name","members","admins"}`.
+    var groupOp: GroupOp?
 
     enum CodingKeys: String, CodingKey {
-        case id, ts, kind, text, attachment, receipt, call, link, forwarded, mentions, poll, vote, close, location, settings
+        case id, ts, kind, text, attachment, receipt, call, link, forwarded, mentions, poll, vote, close, location, settings, profile
         case replyTo = "reply_to"
         case expireS = "expire_s"
+        case groupProfile = "group_profile"
+        case groupOp = "group"
     }
 
     init(
@@ -78,6 +88,64 @@ nonisolated struct AppMessage: Codable, Equatable, Sendable {
         close = try? c.decodeIfPresent(Bool.self, forKey: .close)
         location = try? c.decodeIfPresent(Location.self, forKey: .location)
         settings = try? c.decodeIfPresent(Settings.self, forKey: .settings)
+        profile = try? c.decodeIfPresent(Profile.self, forKey: .profile)
+        groupProfile = try? c.decodeIfPresent(Profile.self, forKey: .groupProfile)
+        groupOp = try? c.decodeIfPresent(GroupOp.self, forKey: .groupOp)
+    }
+
+    /// `{ name?, avatar?: base64 JPEG | null, avatar_hash? }`. A missing `avatar` keeps the photo,
+    /// `null` removes it, so the three states survive a round trip.
+    nonisolated struct Profile: Codable, Equatable, Sendable {
+        enum Avatar: Equatable, Sendable {
+            case keep, remove
+            case set(String)
+        }
+        var name: String?
+        var avatar: Avatar = .keep
+        var avatarHash: String?
+
+        enum CodingKeys: String, CodingKey {
+            case name, avatar
+            case avatarHash = "avatar_hash"
+        }
+
+        init(name: String? = nil, avatar: Avatar = .keep, avatarHash: String? = nil) {
+            self.name = name
+            self.avatar = avatar
+            self.avatarHash = avatarHash
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try? c.decodeIfPresent(String.self, forKey: .name)
+            avatarHash = try? c.decodeIfPresent(String.self, forKey: .avatarHash)
+            if c.contains(.avatar) {
+                if (try? c.decodeNil(forKey: .avatar)) == true {
+                    avatar = .remove
+                } else if let text = try? c.decode(String.self, forKey: .avatar) {
+                    avatar = .set(text)
+                }
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encodeIfPresent(name, forKey: .name)
+            switch avatar {
+            case .keep: break
+            case .remove: try c.encodeNil(forKey: .avatar)
+            case .set(let text): try c.encode(text, forKey: .avatar)
+            }
+            try c.encodeIfPresent(avatarHash, forKey: .avatarHash)
+        }
+    }
+
+    nonisolated struct GroupOp: Codable, Equatable, Sendable {
+        var id: String
+        var event: String?
+        var name: String?
+        var members: [String]?
+        var admins: [String]?
     }
 
     nonisolated struct Attachment: Codable, Equatable, Sendable {

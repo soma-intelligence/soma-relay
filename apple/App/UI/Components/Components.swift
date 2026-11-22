@@ -91,12 +91,13 @@ struct RadarView: View {
     }
 }
 
-/// Initials in a circle, tinted by the last transport.
+/// The profile photo when there is one (spec section 6), else initials (or an icon) in a circle.
 struct Avatar: View {
     let name: String
     var size: CGFloat = 48
     var tint: Color = Theme.incoming
     var icon: String?
+    var photo: UIImage?
 
     var initials: String {
         let parts = name.replacingOccurrences(of: "#", with: "").split(separator: " ")
@@ -109,14 +110,27 @@ struct Avatar: View {
     var body: some View {
         ZStack {
             Circle().fill(tint)
-            if let icon {
+            if let photo {
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
+            } else if let icon {
                 Image(systemName: icon).font(.system(size: size * 0.4, weight: .semibold))
+                    .transition(.opacity)
             } else {
                 Text(initials).font(.system(size: size * 0.38, weight: .semibold))
+                    .minimumScaleFactor(0.5)
+                    .transition(.opacity)
             }
         }
         .foregroundStyle(Theme.text)
         .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay {
+            if photo != nil { Circle().strokeBorder(Theme.text.opacity(0.08), lineWidth: 0.5) }
+        }
+        .animation(.smooth(duration: 0.3), value: photo.map(ObjectIdentifier.init))
         .accessibilityHidden(true)
     }
 }

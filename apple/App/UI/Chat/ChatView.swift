@@ -276,7 +276,7 @@ struct ChatView: View {
         case .unread(let n):
             UnreadSeparator(count: n).id("unread")
         case .system(let item):
-            SystemLine(text: AppModel.timerSentence(item.message.settings?.expireS ?? 0, by: item.isMine ? nil : model.name(of: item.sender)))
+            SystemLine(text: model.systemText(item))
                 .id(item.id)
         case .message(let item, let position, let showSender):
             MessageRow(

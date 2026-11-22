@@ -17,7 +17,7 @@ struct ContactDetailView: View {
                 List {
                     Section {
                         VStack(spacing: 10) {
-                            Avatar(name: contact.name, size: 84)
+                            Avatar(name: contact.name, size: 84, photo: model.photo(for: contact.fingerprint))
                             Text(contact.name).font(.title2.bold()).foregroundStyle(Theme.text)
                             if let handle = contact.handle {
                                 Text("@" + handle).font(Theme.mono(13)).foregroundStyle(Theme.secondary)
