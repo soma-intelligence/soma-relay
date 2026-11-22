@@ -185,7 +185,7 @@ struct OnboardingView: View {
             Text("Phrase de passe")
                 .font(.largeTitle.bold())
                 .foregroundStyle(Theme.text)
-            Text("Ce fichier est chiffré. Saisissez la phrase de passe choisie lors de l'export.")
+            Text("Ce fichier est chiffré. Saisis la phrase de passe choisie lors de l'export.")
                 .foregroundStyle(Theme.secondary)
             SecureField("Phrase de passe", text: $passphrase)
                 .font(.title3)

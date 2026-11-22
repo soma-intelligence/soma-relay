@@ -90,13 +90,32 @@ pub fn seal_vault_with_nonce(
     seal_with(key, id, plain, nonce)
 }
 
+/// Borrowed mirror of `VaultPlain` with the same postcard encoding (a `&[u8]` encodes as a
+/// `Vec<u8>`), so sealing never copies the engine state into a buffer that is not zeroized.
+#[derive(Serialize)]
+struct PlainRef<'a> {
+    v: u8,
+    engine: &'a [u8],
+    handle: Option<&'a str>,
+    node_url: Option<&'a str>,
+    channels_prefs: &'a [u8],
+    photo: Option<&'a [u8]>,
+}
+
 fn seal_with(key: &[u8; 32], id: &str, plain: &VaultPlain, nonce: [u8; NONCE_LEN]) -> Result<Vec<u8>, VaultError> {
     // Always the version `open_vault` reads, and never a photo over 64 KiB.
-    let photo = plain.photo.clone().filter(|p| p.len() <= MAX_PHOTO_BYTES);
-    let plain = VaultPlain { v: VAULT_VERSION, photo, ..plain.clone() };
-    let mut body = Zeroizing::new(to_postcard(&plain));
-    if body.len() + OVERHEAD > MAX_VAULT_BYTES && plain.photo.is_some() {
-        body = Zeroizing::new(to_postcard(&VaultPlain { photo: None, ..plain.clone() }));
+    let mut view = PlainRef {
+        v: VAULT_VERSION,
+        engine: &plain.engine,
+        handle: plain.handle.as_deref(),
+        node_url: plain.node_url.as_deref(),
+        channels_prefs: &plain.channels_prefs,
+        photo: plain.photo.as_deref().filter(|p| p.len() <= MAX_PHOTO_BYTES),
+    };
+    let mut body = Zeroizing::new(to_postcard(&view));
+    if body.len() + OVERHEAD > MAX_VAULT_BYTES && view.photo.is_some() {
+        view.photo = None;
+        body = Zeroizing::new(to_postcard(&view));
     }
     if body.len() + OVERHEAD > MAX_VAULT_BYTES {
         return Err(VaultError::TooLarge);
@@ -349,6 +368,24 @@ mod tests {
         let vk = VerifyingKey::from_bytes(&pk).unwrap();
         assert!(vk.verify(&msg, &Signature::from_bytes(&sig)).is_ok());
         assert!(vk.verify(b"other", &Signature::from_bytes(&sig)).is_err());
+    }
+
+    #[test]
+    fn plain_ref_encodes_like_vault_plain() {
+        let p = VaultPlain { photo: Some(vec![1, 2, 3]), ..sample() };
+        let view = PlainRef {
+            v: p.v,
+            engine: &p.engine,
+            handle: p.handle.as_deref(),
+            node_url: p.node_url.as_deref(),
+            channels_prefs: &p.channels_prefs,
+            photo: p.photo.as_deref(),
+        };
+        assert_eq!(crate::util::to_postcard(&view), crate::util::to_postcard(&p));
+        let none = VaultPlain { handle: None, node_url: None, photo: None, ..sample() };
+        let view = PlainRef { handle: None, node_url: None, photo: None, ..view };
+        let view = PlainRef { engine: &none.engine, channels_prefs: &none.channels_prefs, ..view };
+        assert_eq!(crate::util::to_postcard(&view), crate::util::to_postcard(&none));
     }
 
     #[test]

@@ -140,7 +140,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Sauvegarde")
                 } footer: {
-                    Text("Le fichier contient votre clé privée, chiffrée par une phrase de passe. Gardez-le dans un endroit sûr, jamais dans une conversation.")
+                    Text("Le fichier contient ta clé privée, chiffrée par une phrase de passe. Garde-le dans un endroit sûr, jamais dans une conversation.")
                 }
                 Section {
                     Button("Effacement d'urgence", systemImage: "flame", role: .destructive) { confirmWipe = true }
@@ -245,9 +245,9 @@ private struct ExportPassphraseSheet: View {
                     if mismatch {
                         Text("Les deux phrases ne correspondent pas.").foregroundStyle(Theme.danger)
                     } else if failed {
-                        Text("L'export a échoué. Réessayez.").foregroundStyle(Theme.danger)
+                        Text("L'export a échoué. Réessaie.").foregroundStyle(Theme.danger)
                     } else {
-                        Text("Au moins \(RelayCoreFactory.exportMinPassphrase) caractères. Elle vous sera demandée pour restaurer ce fichier. Sans elle, personne ne peut l'ouvrir, pas même nous.")
+                        Text("Au moins \(RelayCoreFactory.exportMinPassphrase) caractères. Elle te sera demandée pour restaurer ce fichier. Sans elle, personne ne peut l'ouvrir, pas même nous.")
                     }
                 }
                 Section {
