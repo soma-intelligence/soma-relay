@@ -64,7 +64,7 @@ final class RestoreUITests: XCTestCase {
         try control("start")
         app.buttons["Restaurer avec un passkey"].tap()
         XCTAssertTrue(app.staticTexts["Aucune sauvegarde pour ce passkey"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["Commencer"].isHittable, "still on onboarding, usable")
+        XCTAssertTrue(app.buttons["onboarding.start"].isHittable, "still on onboarding, usable")
     }
 
     func testRestoreOffline() throws {
@@ -72,7 +72,7 @@ final class RestoreUITests: XCTestCase {
         try control("stop")
         app.buttons["Restaurer avec un passkey"].tap()
         XCTAssertTrue(app.staticTexts["Pas de réseau"].waitForExistence(timeout: 30))
-        XCTAssertTrue(app.buttons["Commencer"].isHittable)
+        XCTAssertTrue(app.buttons["onboarding.start"].isHittable)
     }
 
     /// A passkey without PRF cannot open the backup; onboarding stays usable.
@@ -81,7 +81,7 @@ final class RestoreUITests: XCTestCase {
         try control("start")
         app.buttons["Restaurer avec un passkey"].tap()
         XCTAssertTrue(app.staticTexts["Ce passkey ne peut pas ouvrir la sauvegarde"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["Commencer"].isHittable)
+        XCTAssertTrue(app.buttons["onboarding.start"].isHittable)
     }
 
     /// Cancelled sheet: no error text, nothing changes.
@@ -90,7 +90,7 @@ final class RestoreUITests: XCTestCase {
         app.buttons["Restaurer avec un passkey"].tap()
         sleep(1)
         XCTAssertTrue(app.buttons["Restaurer avec un passkey"].isHittable)
-        XCTAssertTrue(app.buttons["Commencer"].isHittable)
+        XCTAssertTrue(app.buttons["onboarding.start"].isHittable)
         XCTAssertFalse(app.buttons["settings.open"].firstMatch.exists)
     }
 
@@ -99,7 +99,7 @@ final class RestoreUITests: XCTestCase {
     private func launchAtOnboarding(passkey: String) {
         app.launchArguments = ["-uitest-passkey", passkey, "-uitest-deviceauth", "ok", "-nodeURL", nodeURL, "-lockDelay", "-1"]
         app.launch()
-        let start = app.buttons["Commencer"]
+        let start = app.buttons["onboarding.start"]
         if !start.waitForExistence(timeout: 6) { wipe() }
         XCTAssertTrue(start.waitForExistence(timeout: 15), "onboarding never showed")
     }
@@ -118,7 +118,7 @@ final class RestoreUITests: XCTestCase {
     }
 
     private func onboard(name: String) {
-        app.buttons["Commencer"].tap()
+        app.buttons["onboarding.start"].tap()
         let field = app.textFields["Ton prénom"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()

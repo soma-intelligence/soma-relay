@@ -104,7 +104,7 @@ final class BackupUITests: XCTestCase {
             "-uitest-passkey", passkey, "-uitest-deviceauth", deviceAuth, "-nodeURL", nodeURL, "-lockDelay", "-1",
         ] + extra
         app.launch()
-        let start = app.buttons["Commencer"]
+        let start = app.buttons["onboarding.start"]
         if !start.waitForExistence(timeout: 6) {
             wipe()
         }
@@ -125,7 +125,7 @@ final class BackupUITests: XCTestCase {
     }
 
     private func onboard(name: String, protect: Bool) {
-        app.buttons["Commencer"].tap()
+        app.buttons["onboarding.start"].tap()
         let field = app.textFields["Ton prénom"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()

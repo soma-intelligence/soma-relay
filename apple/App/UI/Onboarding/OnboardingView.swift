@@ -33,7 +33,13 @@ struct OnboardingView: View {
         .padding(.horizontal, 24)
         .animation(.smooth(duration: 0.35), value: step)
         .onAppear {
-            if DemoData.screen == "onboarding-card" { name = "Quentin"; create(offerPasskey: false) }
+            switch DemoData.screen {
+            case "onboarding-card": name = "Quentin"; create(offerPasskey: false)
+            case "onboarding-name": name = "Quentin"; step = .name
+            case "onboarding-passkey": step = .passkey
+            case "onboarding-restore": step = .restore
+            default: break
+            }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item]) { result in
             guard case .success(let url) = result else { return }
@@ -42,87 +48,136 @@ struct OnboardingView: View {
     }
 
     private var welcome: some View {
-        VStack(spacing: 18) {
-            Spacer()
+        VStack(spacing: 0) {
+            Spacer(minLength: 12)
             BrandIcon(size: 112)
                 .background { BrandHalo().frame(width: 560, height: 560) }
+                .padding(.bottom, 28)
             Text("Soma Relay")
-                .font(.system(size: 36, weight: .bold))
-                .foregroundStyle(Theme.text)
-            Text("Tes messages passent de téléphone en téléphone, même sans réseau ni Internet.")
-                .font(.title3)
-                .foregroundStyle(Theme.secondary)
+                .font(.system(size: 40, weight: .bold))
+                .foregroundStyle(DS.label)
+            Text("Tes messages passent de téléphone en téléphone, même sans réseau.")
+                .font(DS.TextStyle.title3.weight(.regular))
+                .foregroundStyle(DS.label2)
                 .multilineTextAlignment(.center)
-            VStack(alignment: .leading, spacing: 14) {
-                feature("dot.radiowaves.left.and.right", "Bluetooth et Wi-Fi direct entre téléphones proches")
-                feature("lock.shield", "Chiffré de bout en bout, post-quantique")
-                feature("person.crop.circle.badge.questionmark", "Ni numéro, ni e-mail : juste une clé")
+                .padding(.top, 10)
+            Spacer(minLength: 24)
+            VStack(alignment: .leading, spacing: 22) {
+                feature("point.3.connected.trianglepath.dotted", "Sans réseau", "Bluetooth et Wi-Fi direct entre téléphones proches.")
+                feature("lock.shield.fill", "Chiffré pour de bon", "De bout en bout, post-quantique. Personne d'autre ne lit.")
+                feature("person.crop.circle", "Ni numéro, ni e-mail", "Juste une clé qui reste sur ton téléphone.")
             }
-            .padding(.top, 12)
-            Spacer()
-            primary("Commencer", disabled: restoring) { step = .name }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 24)
+            primary("Créer mon identité", disabled: restoring) { step = .name }
+                .accessibilityIdentifier("onboarding.start")
             Button {
                 restoreWithPasskey()
             } label: {
-                Text(restoringPasskey ? "Restauration…" : "Restaurer avec un passkey")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 44)
+                HStack(spacing: 8) {
+                    if restoringPasskey { ProgressView() }
+                    Text(restoringPasskey ? "Restauration…" : "Restaurer avec un passkey")
+                }
             }
-            .buttonStyle(.glass)
-            .controlSize(.large)
+            .buttonStyle(.dsSecondary)
             .disabled(restoring)
             .accessibilityLabel("Restaurer avec un passkey")
-            Button("Restaurer depuis un fichier") {
+            .padding(.top, 12)
+            Button {
                 restoreError = nil
                 showImporter = true
+            } label: {
+                Text("Restaurer depuis un fichier")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(DS.label2)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
             }
-            .font(.subheadline.weight(.medium))
-            .frame(minHeight: 44)
+            .buttonStyle(.plain)
             .disabled(restoring)
+            .accessibilityLabel("Restaurer depuis un fichier")
+            .padding(.top, 4)
             if let restoreError, step == .welcome {
                 Text(restoreError)
-                    .font(.footnote)
-                    .foregroundStyle(Theme.danger)
+                    .font(DS.TextStyle.footnote)
+                    .foregroundStyle(DS.danger)
                     .multilineTextAlignment(.center)
+                    .padding(.bottom, 4)
             }
-            Text("Code ouvert sous licence AGPL.")
-                .font(.footnote)
-                .foregroundStyle(Theme.secondary)
-                .padding(.bottom, 12)
+            Text("Code ouvert sous licence AGPL")
+                .font(DS.TextStyle.footnote)
+                .foregroundStyle(DS.label3)
+                .padding(.bottom, 8)
         }
         .transition(.opacity)
     }
 
-    private func feature(_ icon: String, _ text: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(Theme.mesh)
-                .frame(width: 28)
-            Text(text).font(.body).foregroundStyle(Theme.text)
+    private func feature(_ icon: String, _ title: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            DSIconTile(systemName: icon, size: 48, fill: DS.cell, foreground: DS.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(DS.TextStyle.headline)
+                    .foregroundStyle(DS.label)
+                Text(text)
+                    .font(DS.TextStyle.subheadline)
+                    .foregroundStyle(DS.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Title and explanation at the top of a step.
+    private func stepHeader(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(DS.TextStyle.largeTitle)
+                .foregroundStyle(DS.label)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(text)
+                .font(DS.TextStyle.body)
+                .foregroundStyle(DS.label2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// A single-field card of the steps (prénom, phrase de passe).
+    private func fieldCard<Field: View>(@ViewBuilder _ field: () -> Field) -> some View {
+        field()
+            .font(DS.TextStyle.title3.weight(.regular))
+            .foregroundStyle(DS.label)
+            .padding(.horizontal, DS.Space.cell + 2)
+            .frame(height: 58)
+            .dsCard()
+    }
+
+    /// Quiet text action under the main button ("Plus tard", "Retour").
+    private func quiet(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(DS.TextStyle.headline)
+                .foregroundStyle(DS.label)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 
     private var nameStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             Spacer().frame(height: 40)
-            Text("Comment on t'appelle ?")
-                .font(.largeTitle.bold())
-                .foregroundStyle(Theme.text)
-            Text("Ton prénom ou un surnom. Il voyage avec ta carte, tu peux le changer quand tu veux.")
-                .foregroundStyle(Theme.secondary)
-            TextField("Prénom", text: $name)
-                .font(.title2)
-                .textContentType(.givenName)
-                .submitLabel(.done)
-                .focused($nameFocused)
-                .padding(.horizontal, 18)
-                .frame(height: 56)
-                .glassBar(radius: 22)
-                .onSubmit(create)
-                .accessibilityLabel("Ton prénom")
+            stepHeader("Comment on t'appelle ?", "Ton prénom ou un surnom. Il voyage avec ta carte, tu peux le changer quand tu veux.")
+            fieldCard {
+                TextField("Prénom", text: $name)
+                    .textContentType(.givenName)
+                    .submitLabel(.done)
+                    .focused($nameFocused)
+                    .onSubmit(create)
+                    .accessibilityLabel("Ton prénom")
+            }
+            .padding(.top, 8)
             Spacer()
             primary("Créer mon identité", disabled: name.trimmingCharacters(in: .whitespaces).isEmpty, action: create)
                 .padding(.bottom, 12)
@@ -137,11 +192,11 @@ struct OnboardingView: View {
             CipherQRCode(stage: .connecting)
                 .frame(width: 220)
             Text("Génération de tes clés")
-                .font(.title2.bold())
-                .foregroundStyle(Theme.text)
+                .font(DS.TextStyle.title2)
+                .foregroundStyle(DS.label)
             Text("ML-KEM-1024 + X25519 · ML-DSA-87 + Ed25519")
-                .font(Theme.mono(12))
-                .foregroundStyle(Theme.secondary)
+                .font(DS.TextStyle.footnote)
+                .foregroundStyle(DS.label2)
             Spacer()
         }
         .transition(.opacity)
@@ -152,10 +207,11 @@ struct OnboardingView: View {
         VStack(spacing: 18) {
             Spacer().frame(height: 24)
             Text("Ta carte est prête")
-                .font(.largeTitle.bold())
-                .foregroundStyle(Theme.text)
+                .font(DS.TextStyle.largeTitle)
+                .foregroundStyle(DS.label)
             Text("Fais scanner ce QR pour qu'on t'ajoute. Ta clé ne quitte jamais ce téléphone.")
-                .foregroundStyle(Theme.secondary)
+                .font(DS.TextStyle.body)
+                .foregroundStyle(DS.label2)
                 .multilineTextAlignment(.center)
             if let link = model.myCompactLink {
                 CipherQRCode(stage: .code(link))
@@ -165,11 +221,11 @@ struct OnboardingView: View {
             if let core = model.core {
                 VStack(spacing: 6) {
                     Text(core.fingerprintHex().groupedFingerprint(groups: 4))
-                        .font(Theme.mono(13, weight: .medium))
-                        .foregroundStyle(Theme.text)
+                        .font(DS.TextStyle.fingerprint(14))
+                        .foregroundStyle(DS.label)
                     Text(core.safetyWords().joined(separator: " · "))
-                        .font(Theme.mono(12))
-                        .foregroundStyle(Theme.secondary)
+                        .font(DS.TextStyle.subheadline)
+                        .foregroundStyle(DS.label2)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Ton empreinte")
@@ -197,37 +253,31 @@ struct OnboardingView: View {
     private var restoreStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             Spacer().frame(height: 40)
-            Text("Phrase de passe")
-                .font(.largeTitle.bold())
-                .foregroundStyle(Theme.text)
-            Text("Ce fichier est chiffré. Saisis la phrase de passe choisie lors de l'export.")
-                .foregroundStyle(Theme.secondary)
-            SecureField("Phrase de passe", text: $passphrase)
-                .font(.title3)
-                .textContentType(.password)
-                .submitLabel(.go)
-                .focused($passphraseFocused)
-                .padding(.horizontal, 18)
-                .frame(height: 56)
-                .glassBar(radius: 22)
-                .onSubmit { restore(passphrase: passphrase) }
-                .accessibilityLabel("Phrase de passe du fichier")
+            stepHeader("Phrase de passe", "Ce fichier est chiffré. Saisis la phrase de passe choisie lors de l'export.")
+            fieldCard {
+                SecureField("Phrase de passe", text: $passphrase)
+                    .textContentType(.password)
+                    .submitLabel(.go)
+                    .focused($passphraseFocused)
+                    .onSubmit { restore(passphrase: passphrase) }
+                    .accessibilityLabel("Phrase de passe du fichier")
+            }
+            .padding(.top, 8)
             if let restoreError {
                 Text(restoreError)
-                    .font(.footnote)
-                    .foregroundStyle(Theme.danger)
+                    .font(DS.TextStyle.footnote)
+                    .foregroundStyle(DS.danger)
             }
             Spacer()
             primary(restoring ? "Déchiffrement…" : "Restaurer", disabled: passphrase.isEmpty || restoring) {
                 restore(passphrase: passphrase)
             }
-            Button("Retour") {
+            quiet("Retour") {
                 passphrase = ""
                 importText = ""
                 restoreError = nil
                 step = .welcome
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
             .disabled(restoring)
             .padding(.bottom, 12)
         }
@@ -318,27 +368,19 @@ struct OnboardingView: View {
     private var passkeyStep: some View {
         VStack(alignment: .leading, spacing: 16) {
             Spacer().frame(height: 40)
-            Image(systemName: "person.badge.key.fill")
-                .font(.system(size: 44, weight: .medium))
-                .foregroundStyle(Theme.mesh)
-                .accessibilityHidden(true)
-            Text("Protéger avec un passkey")
-                .font(.largeTitle.bold())
-                .foregroundStyle(Theme.text)
-            Text("Ton passkey verrouille Relay et chiffre une sauvegarde de ton identité sur le nœud. Le nœud ne peut pas la lire. Sur un nouveau téléphone, ce même passkey la restaure.")
-                .foregroundStyle(Theme.secondary)
+            DSIconTile(systemName: "key.fill", size: 64, fill: DS.accentSoft, foreground: DS.accent)
+            stepHeader("Protéger avec un passkey", "Ton passkey verrouille Relay et chiffre une sauvegarde de ton identité sur le nœud. Le nœud ne peut pas la lire. Sur un nouveau téléphone, ce même passkey la restaure.")
             if let passkeyError {
                 Text(passkeyError)
-                    .font(.footnote)
-                    .foregroundStyle(Theme.danger)
+                    .font(DS.TextStyle.footnote)
+                    .foregroundStyle(DS.danger)
             }
             Spacer()
             primary(protecting ? "Création…" : "Créer un passkey", disabled: protecting, action: protect)
-            Button("Plus tard") {
+            quiet("Plus tard") {
                 passkeyError = nil
                 step = .card
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
             .disabled(protecting)
             .padding(.bottom, 12)
         }
