@@ -37,7 +37,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            DS.background.ignoresSafeArea()
             switch model.phase {
             case .loading:
                 BrandMark().frame(width: 72)
@@ -50,7 +50,7 @@ struct RootView: View {
             }
         }
         .accessibilityHidden(lockShown)
-        .tint(Theme.mesh)
+        .tint(DS.accent)
         .overlay(alignment: .top) {
             VStack(spacing: 8) {
                 MessageBannerView()
@@ -128,8 +128,8 @@ struct BannerView: View {
     var body: some View {
         if let text = model.banner {
             Text(text)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Theme.text)
+                .font(DS.TextStyle.subheadline.weight(.medium))
+                .foregroundStyle(DS.label)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -158,17 +158,17 @@ struct MessageBannerView: View {
     var body: some View {
         if let banner = model.messageBanner {
             HStack(spacing: 12) {
-                Avatar(
+                DSAvatar(
                     name: banner.title, size: 42, icon: banner.isGroup ? "person.3.fill" : nil,
                     photo: banner.photoKey.flatMap { model.photos[$0] })
                 VStack(alignment: .leading, spacing: 2) {
                     Text(banner.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.text)
+                        .font(DS.TextStyle.subheadline.weight(.semibold))
+                        .foregroundStyle(DS.label)
                         .lineLimit(1)
                     Text(banner.preview)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.secondary)
+                        .font(DS.TextStyle.subheadline)
+                        .foregroundStyle(DS.label2)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 0)

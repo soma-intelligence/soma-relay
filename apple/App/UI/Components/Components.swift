@@ -49,50 +49,6 @@ struct RadarView: View {
     }
 }
 
-/// The profile photo when there is one (spec section 6), else initials (or an icon) in a circle.
-struct Avatar: View {
-    let name: String
-    var size: CGFloat = 48
-    var tint: Color = Theme.incoming
-    var icon: String?
-    var photo: UIImage?
-
-    var initials: String {
-        let parts = name.replacingOccurrences(of: "#", with: "").split(separator: " ")
-        let letters = parts.count == 1
-            ? String(parts[0].prefix(2))
-            : parts.prefix(2).compactMap(\.first).map(String.init).joined()
-        return letters.isEmpty ? "?" : letters.uppercased()
-    }
-
-    var body: some View {
-        ZStack {
-            Circle().fill(tint)
-            if let photo {
-                Image(uiImage: photo)
-                    .resizable()
-                    .scaledToFill()
-                    .transition(.opacity)
-            } else if let icon {
-                Image(systemName: icon).font(.system(size: size * 0.4, weight: .semibold))
-                    .transition(.opacity)
-            } else {
-                Text(initials).font(.system(size: size * 0.38, weight: .semibold))
-                    .minimumScaleFactor(0.5)
-                    .transition(.opacity)
-            }
-        }
-        .foregroundStyle(Theme.text)
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        .overlay {
-            if photo != nil { Circle().strokeBorder(Theme.text.opacity(0.08), lineWidth: 0.5) }
-        }
-        .animation(.smooth(duration: 0.3), value: photo.map(ObjectIdentifier.init))
-        .accessibilityHidden(true)
-    }
-}
-
 /// Voice note levels.
 struct Waveform: View {
     let levels: [Float]
@@ -116,7 +72,7 @@ struct Waveform: View {
     }
 }
 
-/// Centered empty state with the mark.
+/// Centered empty state: the mark (or a glyph on a tile), a title, one line, an optional lime action.
 struct EmptyState: View {
     let title: String
     let message: String
@@ -124,92 +80,34 @@ struct EmptyState: View {
     var action: (label: String, run: () -> Void)?
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 0) {
             if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.system(size: 34, weight: .regular))
-                    .foregroundStyle(Theme.secondary)
+                DSIconTile(systemName: systemImage, size: 64, fill: DS.cell, foreground: DS.label2)
+                    .padding(.bottom, 18)
             } else {
                 BrandMark().frame(width: 64)
+                    .padding(.bottom, 18)
             }
-            Text(title).font(.title3.weight(.semibold)).foregroundStyle(Theme.text)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(Theme.secondary)
+            Text(title)
+                .font(DS.TextStyle.title3)
+                .foregroundStyle(DS.label)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 300)
+            if !message.isEmpty {
+                Text(message)
+                    .font(DS.TextStyle.subheadline)
+                    .foregroundStyle(DS.label2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+                    .padding(.top, 6)
+            }
             if let action {
                 Button(action.label, action: action.run)
-                    .buttonStyle(.glassProminent)
-                    .controlSize(.large)
-                    .padding(.top, 4)
+                    .buttonStyle(.dsPrimary)
+                    .frame(maxWidth: 280)
+                    .padding(.top, 22)
             }
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// Four safety words as glass pills (call screen and verification).
-struct WordPills: View {
-    let words: [String]
-    var font: Font = .system(size: 15)
-
-    var body: some View {
-        FlowRow(spacing: 8) {
-            ForEach(Array(words.enumerated()), id: \.offset) { _, word in
-                Text(word)
-                    .font(font)
-                    .foregroundStyle(Theme.text)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Theme.glassFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.glassStroke))
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Mots de sécurité : " + words.joined(separator: ", "))
-    }
-}
-
-/// Wrapping row, centered.
-struct FlowRow: Layout {
-    var spacing: CGFloat = 8
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let rows = arrange(proposal.width ?? .infinity, subviews)
-        let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * spacing
-        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var y = bounds.minY
-        for row in arrange(bounds.width, subviews) {
-            var x = bounds.midX - row.width / 2
-            for index in row.items {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-                x += size.width + spacing
-            }
-            y += row.height + spacing
-        }
-    }
-
-    private struct Row { var items: [Int] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
-
-    private func arrange(_ maxWidth: CGFloat, _ subviews: Subviews) -> [Row] {
-        var rows: [Row] = [Row()]
-        for (i, view) in subviews.enumerated() {
-            let size = view.sizeThatFits(.unspecified)
-            if !rows[rows.count - 1].items.isEmpty, rows[rows.count - 1].width + spacing + size.width > maxWidth {
-                rows.append(Row())
-            }
-            var row = rows[rows.count - 1]
-            row.width += (row.items.isEmpty ? 0 : spacing) + size.width
-            row.height = max(row.height, size.height)
-            row.items.append(i)
-            rows[rows.count - 1] = row
-        }
-        return rows
     }
 }

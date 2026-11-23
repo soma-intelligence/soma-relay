@@ -364,8 +364,8 @@ struct ForwardSheet: View {
                     dismiss()
                 } label: {
                     HStack(spacing: 12) {
-                        Avatar(
-                            name: c.title, size: 40, tint: DS.cell2, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil,
+                        DSAvatar(
+                            name: c.title, size: 40, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil,
                             photo: model.photo(of: c))
                         Text(c.title).foregroundStyle(DS.label)
                         Spacer()
