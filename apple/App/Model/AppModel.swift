@@ -99,13 +99,14 @@ final class AppModel {
     init() {
         let args = UserDefaults.standard
         demo = AppConfig.demoAllowed && args.bool(forKey: "RelayDemoData")
-        nodeURL = args.string(forKey: "nodeURL") ?? Self.defaultNodeURL
+        let database = (try? AppDatabase(inMemory: demo)) ?? (try! AppDatabase(inMemory: true))
+        db = database
+        nodeURL = AppConfig.initialNodeURL(defaults: args, hasIdentity: !demo && database.value(for: "engine") != nil)
         handle = args.string(forKey: "handle") ?? ""
         visibleNearby = args.object(forKey: "visibleNearby") as? Bool ?? true
         nodeEnabled = args.object(forKey: "nodeEnabled") as? Bool ?? true
         linkPreviews = args.object(forKey: "linkPreviews") as? Bool ?? true
         notificationPreviews = args.object(forKey: "notificationPreviews") as? Bool ?? true
-        db = (try? AppDatabase(inMemory: demo)) ?? (try! AppDatabase(inMemory: true))
         node = NodeClient(
             baseURL: URL(string: nodeURL) ?? URL(string: Self.defaultNodeURL)!,
             core: { [weak self] in self?.core },
@@ -437,7 +438,7 @@ final class AppModel {
     /// The envelope of a pending message as an encrypted SMS link (text only, <= 1 KiB envelope).
     func smsLink(for messageId: String) -> String? {
         guard let item = db.outbox().first(where: { $0.messageId == messageId }), item.envelope.count <= 1100 else { return nil }
-        return AppConfig.smsLinkBase + item.envelope.base64url
+        return AppConfig.smsLinkBase(nodeURL: nodeURL) + item.envelope.base64url
     }
 
     func markSentBySMS(_ messageId: String) {

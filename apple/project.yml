@@ -126,6 +126,19 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: SomaRelay
         SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+  # Unit tests hosted in the app (Debug): `@testable import SomaRelay`.
+  SomaRelayTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: SomaRelay
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.somalabs.relay.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
 schemes:
   SomaRelay:
     build:
@@ -137,5 +150,6 @@ schemes:
       config: Debug
       targets:
         - SomaRelayUITests
+        - SomaRelayTests
     archive:
       config: Release
