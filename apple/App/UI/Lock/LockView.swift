@@ -10,25 +10,31 @@ struct LockView: View {
     /// The scene is active. Passed in: this view lives in a window SwiftUI's scene phase does not reach.
     var sceneActive = true
 
+    /// Unread messages: a count only, never a name or a preview.
+    var unread = 0
+
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            DS.background.ignoresSafeArea()
             VStack(spacing: 0) {
                 Spacer()
                 BrandMark().frame(width: 116)
                     .background { BrandHalo().frame(width: 640, height: 640) }
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 36)
                 Text("Relay est verrouillé")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(Theme.text)
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(DS.label)
                     .multilineTextAlignment(.center)
                 Text(subtitle)
-                    .font(.body)
-                    .foregroundStyle(Theme.secondary)
+                    .font(DS.TextStyle.body)
+                    .foregroundStyle(lock.failed ? DS.danger : DS.label2)
                     .multilineTextAlignment(.center)
-                    .padding(.top, 8)
+                    .padding(.top, 10)
                     .padding(.horizontal, 32)
                     .contentTransition(.opacity)
+                if unread > 0, !coverOnly {
+                    unreadCapsule.padding(.top, 28)
+                }
                 Spacer()
                 if !coverOnly {
                     buttons
@@ -52,37 +58,50 @@ struct LockView: View {
     private var subtitle: String {
         if lock.failed { return "Ça n'a pas marché. Réessaie." }
         if lock.showsDeviceFallback { return "Ta clé d'accès n'a pas répondu. Tu peux utiliser Face ID ou le code de ton téléphone." }
-        return "Tes messages continuent d'arriver. Déverrouille pour les lire."
+        return "Tes messages continuent d'arriver.\nDéverrouille pour les lire."
+    }
+
+    private var unreadCapsule: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(DS.label3)
+            Text("Nouveaux messages")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(DS.label)
+            DSCountBadge(count: unread)
+        }
+        .padding(.leading, 18)
+        .padding(.trailing, 8)
+        .frame(height: 40)
+        .glassEffect(.regular, in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(unread == 1 ? "1 nouveau message" : "\(unread) nouveaux messages")
     }
 
     private var buttons: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Button {
                 Haptics.tap()
                 Task { await lock.unlock() }
             } label: {
-                Text("Déverrouiller")
-                    .font(.headline)
-                    .foregroundStyle(Theme.onMesh)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 44)
+                Label("Déverrouiller", systemImage: "key.fill")
             }
-            .buttonStyle(.glassProminent)
-            .controlSize(.large)
+            .buttonStyle(.dsPrimary)
             .disabled(lock.busy)
+            .accessibilityLabel("Déverrouiller")
             if lock.showsDeviceFallback {
                 Button {
                     Haptics.tap()
                     Task { await lock.unlockWithDevice() }
                 } label: {
                     Text("Utiliser Face ID ou le code")
-                        .font(.headline)
-                        .foregroundStyle(Theme.text)
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: 44)
+                        .font(DS.TextStyle.headline)
+                        .foregroundStyle(DS.label)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.glass)
-                .controlSize(.large)
+                .buttonStyle(.plain)
                 .disabled(lock.busy)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }

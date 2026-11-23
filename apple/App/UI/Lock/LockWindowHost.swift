@@ -7,6 +7,8 @@ import UIKit
 final class LockWindowState {
     var coverOnly = false
     var sceneActive = true
+    /// Unread messages, a count only (the lock never shows content).
+    var unread = 0
 }
 
 /// Puts `LockView` in its own `UIWindow` at `.alert + 1`, above the app window and everything
@@ -17,6 +19,7 @@ struct LockWindowHost: UIViewRepresentable {
     let visible: Bool
     let coverOnly: Bool
     let sceneActive: Bool
+    var unread = 0
 
     func makeUIView(context: Context) -> LockWindowAnchor {
         let anchor = LockWindowAnchor(lock: lock)
@@ -25,7 +28,7 @@ struct LockWindowHost: UIViewRepresentable {
     }
 
     func updateUIView(_ anchor: LockWindowAnchor, context: Context) {
-        anchor.update(visible: visible, coverOnly: coverOnly, sceneActive: sceneActive)
+        anchor.update(visible: visible, coverOnly: coverOnly, sceneActive: sceneActive, unread: unread)
     }
 
     static func dismantleUIView(_ anchor: LockWindowAnchor, coordinator: ()) {
@@ -53,9 +56,10 @@ final class LockWindowAnchor: UIView {
         apply()
     }
 
-    func update(visible: Bool, coverOnly: Bool, sceneActive: Bool) {
+    func update(visible: Bool, coverOnly: Bool, sceneActive: Bool, unread: Int) {
         state.coverOnly = coverOnly
         state.sceneActive = sceneActive
+        state.unread = unread
         self.visible = visible
         apply()
     }
@@ -120,7 +124,7 @@ private struct LockWindowRoot: View {
     let state: LockWindowState
 
     var body: some View {
-        LockView(lock: lock, coverOnly: state.coverOnly, sceneActive: state.sceneActive)
+        LockView(lock: lock, coverOnly: state.coverOnly, sceneActive: state.sceneActive, unread: state.unread)
             .tint(Theme.mesh)
     }
 }

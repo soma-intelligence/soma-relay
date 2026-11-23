@@ -66,7 +66,8 @@ struct RootView: View {
                 lock: model.lock,
                 visible: lockGate && (model.lock.isLocked || scenePhase != .active),
                 coverOnly: !model.lock.isLocked,
-                sceneActive: scenePhase == .active)
+                sceneActive: scenePhase == .active,
+                unread: model.conversations.filter { $0.kind != .channel }.reduce(0) { $0 + $1.unread })
         }
     }
 
