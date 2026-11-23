@@ -15,8 +15,9 @@ struct LockView: View {
             Theme.background.ignoresSafeArea()
             VStack(spacing: 0) {
                 Spacer()
-                RelayMark().frame(width: 76)
-                    .padding(.bottom, 28)
+                BrandMark().frame(width: 116)
+                    .background { BrandHalo().frame(width: 640, height: 640) }
+                    .padding(.bottom, 24)
                 Text("Relay est verrouillé")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(Theme.text)

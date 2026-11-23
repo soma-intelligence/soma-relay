@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Node, identity, lock, visibility, safety words, export and emergency wipe.
+/// Node, identity, lock, safety words, export and emergency wipe. A sheet from the avatar.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var nodeDraft = ""
     @State private var publishing = false
@@ -77,12 +78,11 @@ struct SettingsView: View {
                     Text("Ton téléphone prépare l'aperçu d'un lien avant l'envoi. Ton contact ne charge rien.")
                 }
                 Section {
-                    Toggle("Visible à proximité", isOn: $model.visibleNearby)
                     LabeledContent("Téléphones reliés", value: "\(model.meshPeerCount)")
                 } header: {
                     Text("Mesh")
                 } footer: {
-                    Text("Bluetooth et Wi-Fi direct, sans Internet. Visible : les téléphones proches voient ton nom et peuvent t'ajouter. Invisible : tu relaies quand même les messages des autres, sans pouvoir les lire.")
+                    Text("Bluetooth et Wi-Fi direct, sans Internet. La visibilité se règle dans l'onglet À proximité.")
                 }
                 Section {
                     Toggle("Utiliser un nœud", isOn: $model.nodeEnabled)
@@ -178,6 +178,13 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(Theme.background)
             .navigationTitle("Réglages")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: { Image(systemName: "xmark").foregroundStyle(DS.label) }
+                        .accessibilityLabel("Fermer")
+                }
+            }
             .onAppear {
                 name = model.displayName
                 nodeDraft = model.nodeURL

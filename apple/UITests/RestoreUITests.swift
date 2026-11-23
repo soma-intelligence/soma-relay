@@ -47,7 +47,7 @@ final class RestoreUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts[Self.restored].waitForExistence(timeout: 20), "no restored banner")
         dismissSystemAlerts()
-        let settings = app.tabBars.buttons["Réglages"]
+        let settings = app.buttons["settings.open"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 10), "not in the app after restore")
         settings.tap()
         XCTAssertEqual(safetyWords(), words, "a different identity came back")
@@ -91,7 +91,7 @@ final class RestoreUITests: XCTestCase {
         sleep(1)
         XCTAssertTrue(app.buttons["Restaurer avec un passkey"].isHittable)
         XCTAssertTrue(app.buttons["Commencer"].isHittable)
-        XCTAssertFalse(app.tabBars.buttons["Réglages"].exists)
+        XCTAssertFalse(app.buttons["settings.open"].firstMatch.exists)
     }
 
     // MARK: Steps
@@ -106,7 +106,7 @@ final class RestoreUITests: XCTestCase {
 
     /// Emergency wipe through Réglages.
     private func wipe() {
-        let settings = app.tabBars.buttons["Réglages"]
+        let settings = app.buttons["settings.open"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 15), "neither onboarding nor the tabs")
         settings.tap()
         let wipeButton = app.buttons["Effacement d'urgence"]
@@ -131,7 +131,7 @@ final class RestoreUITests: XCTestCase {
         XCTAssertTrue(go.waitForExistence(timeout: 20), "no card after the passkey step")
         go.tap()
         dismissSystemAlerts()
-        let settings = app.tabBars.buttons["Réglages"]
+        let settings = app.buttons["settings.open"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
         settings.tap()
     }
@@ -163,8 +163,8 @@ final class RestoreUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if !statusElement.exists || !statusElement.isHittable {
-                if app.tabBars.buttons["Réglages"].exists, !app.navigationBars["Réglages"].exists {
-                    app.tabBars.buttons["Réglages"].tap()
+                if app.buttons["settings.open"].firstMatch.exists, !app.navigationBars["Réglages"].exists {
+                    app.buttons["settings.open"].firstMatch.tap()
                 }
                 if !statusElement.exists { app.swipeUp() }
             }

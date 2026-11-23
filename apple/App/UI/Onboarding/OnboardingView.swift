@@ -44,7 +44,8 @@ struct OnboardingView: View {
     private var welcome: some View {
         VStack(spacing: 18) {
             Spacer()
-            RelayMark().frame(width: 112)
+            BrandIcon(size: 112)
+                .background { BrandHalo().frame(width: 560, height: 560) }
             Text("Soma Relay")
                 .font(.system(size: 36, weight: .bold))
                 .foregroundStyle(Theme.text)
@@ -185,13 +186,10 @@ struct OnboardingView: View {
             Haptics.tap()
             action()
         } label: {
+            // Dark text on lime (white on lime failed contrast).
             Text(title)
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
         }
-        .buttonStyle(.glassProminent)
-        .controlSize(.large)
+        .buttonStyle(.dsPrimary)
         .disabled(disabled)
     }
 

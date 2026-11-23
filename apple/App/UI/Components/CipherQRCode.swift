@@ -345,10 +345,13 @@ struct CipherQRCode: View {
                 let s = markSide * markScale
                 let tile = CGRect(x: center.x - s / 2, y: center.y - s / 2, width: s, height: s)
                 context.fill(Path(roundedRect: tile, cornerRadius: s * 0.24, style: .continuous), with: ink)
-                let mark = tile.insetBy(dx: s * 0.16, dy: s * 0.16)
-                context.stroke(RelayMarkShape.arc(in: mark), with: .color(.white), style: StrokeStyle(lineWidth: s * 0.075, lineCap: .round))
-                context.fill(RelayMarkShape.nodes(in: mark), with: .color(.white))
-                context.stroke(RelayMarkShape.ring(in: mark), with: .color(.white.opacity(0.45)), lineWidth: s * 0.04)
+                // The bubble with three typing dots, lime on the dark tile.
+                let mark = tile.insetBy(dx: s * 0.08, dy: s * 0.08)
+                let lime = Color(UIColor(hex: 0xC6F24E, alpha: 1))
+                context.stroke(
+                    BrandMarkShape.bubble(in: mark), with: .color(lime),
+                    style: StrokeStyle(lineWidth: BrandMarkShape.strokeWidth * 1.3 * BrandMarkShape.scale(in: mark), lineCap: .round, lineJoin: .round))
+                context.fill(BrandMarkShape.dotsPath(in: mark), with: .color(Color(UIColor(hex: 0xE4FBA2, alpha: 1))))
             }
         }
 

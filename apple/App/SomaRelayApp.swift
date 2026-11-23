@@ -40,7 +40,7 @@ struct RootView: View {
             Theme.background.ignoresSafeArea()
             switch model.phase {
             case .loading:
-                RelayMark().frame(width: 72)
+                BrandMark().frame(width: 72)
             case .onboarding:
                 OnboardingView()
                     .transition(.opacity)
@@ -77,29 +77,42 @@ struct RootView: View {
 struct MainTabs: View {
     @Environment(AppModel.self) private var model
     @State private var tab = Tab.conversations
+    @State private var showSettings = false
 
-    enum Tab: Hashable { case conversations, contacts, settings }
+    enum Tab: Hashable { case conversations, nearby, contacts, search }
 
     var body: some View {
         TabView(selection: $tab) {
-            SwiftUI.Tab("Conversations", systemImage: "bubble.left.and.bubble.right", value: Tab.conversations) {
+            SwiftUI.Tab("Discussions", systemImage: "bubble.left.and.bubble.right.fill", value: Tab.conversations) {
                 ConversationsView()
             }
-            .badge(model.conversations.reduce(0) { $0 + $1.unread })
-            SwiftUI.Tab("Répertoire", systemImage: "person.2", value: Tab.contacts) {
+            .badge(model.conversations.filter { $0.kind != .channel }.reduce(0) { $0 + $1.unread })
+            SwiftUI.Tab("À proximité", systemImage: "dot.radiowaves.left.and.right", value: Tab.nearby) {
+                NearbyView()
+            }
+            SwiftUI.Tab("Contacts", systemImage: "person.2.fill", value: Tab.contacts) {
                 ContactsView()
             }
-            SwiftUI.Tab("Réglages", systemImage: "gearshape", value: Tab.settings) {
-                SettingsView()
+            SwiftUI.Tab(value: Tab.search, role: .search) {
+                SearchTabView()
             }
         }
+        .tint(DS.accent)
+        .environment(\.openSettings, { showSettings = true })
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
         .onChange(of: model.openRequest) { _, request in
-            if request != nil, tab != .conversations { tab = .conversations }
+            guard request != nil else { return }
+            showSettings = false
+            if tab != .conversations { tab = .conversations }
         }
         .onAppear {
             switch DemoData.screen {
             case "contacts", "qr", "qr-verify": tab = .contacts
-            case "settings": tab = .settings
+            case "nearby", "channels": tab = .nearby
+            case "list-search": tab = .search
+            case "settings": showSettings = true
             case "call": model.calls.showDemo(peer: DemoData.ines)
             default: break
             }

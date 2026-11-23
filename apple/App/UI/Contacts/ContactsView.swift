@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Répertoire: my card, nearby people on the mesh, contacts.
+/// Contacts: my card and the directory (people in range live in À proximité).
 struct ContactsView: View {
     @Environment(AppModel.self) private var model
     @State private var showAdd = false
@@ -34,28 +34,6 @@ struct ContactsView: View {
                     }
                     .accessibilityHint("Affiche ton QR à scanner")
                 }
-                let strangers = model.nearby.filter { $0.name != nil && !model.isContact(nearby: $0) }
-                if !strangers.isEmpty {
-                    Section("À proximité sur le mesh") {
-                        ForEach(strangers) { peer in
-                            HStack(spacing: 12) {
-                                Avatar(name: peer.name ?? peer.code, size: 40)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(peer.name ?? peer.code).foregroundStyle(Theme.text)
-                                    Text(peer.connected ? "relié · \(peer.code)" : "visible · \(peer.code)")
-                                        .font(Theme.mono(11)).foregroundStyle(Theme.secondary)
-                                }
-                                Spacer()
-                                Button("Ajouter") {
-                                    if !peer.connected { model.mesh.invite(peer.id) }
-                                    model.requestCard(from: peer)
-                                }
-                                .buttonStyle(.glass)
-                                .disabled(!peer.connected)
-                            }
-                        }
-                    }
-                }
                 Section(model.contacts.isEmpty ? "" : "Contacts") {
                     ForEach(filtered) { contact in
                         NavigationLink {
@@ -70,7 +48,7 @@ struct ContactsView: View {
             .background(Theme.background)
             .searchable(text: $search, prompt: "Rechercher")
             .overlay {
-                if model.contacts.isEmpty && model.nearby.allSatisfy({ $0.name == nil }) {
+                if model.contacts.isEmpty {
                     EmptyState(
                         title: "Personne pour l'instant",
                         message: "Scanne le QR d'un proche ou montre-lui le tien. Pas besoin de réseau.",
@@ -79,7 +57,7 @@ struct ContactsView: View {
                         .padding(.top, 120)
                 }
             }
-            .navigationTitle("Répertoire")
+            .dsTabChrome(title: "Contacts")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAdd = true } label: { Image(systemName: "person.badge.plus") }

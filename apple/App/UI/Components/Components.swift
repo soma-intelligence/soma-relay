@@ -1,47 +1,5 @@
 import SwiftUI
 
-/// The Soma Relay mark: two nodes joined by an arc over a radar ring.
-nonisolated enum RelayMarkShape {
-    static func arc(in r: CGRect) -> Path {
-        var p = Path()
-        let left = CGPoint(x: r.minX + r.width * 0.16, y: r.minY + r.height * 0.62)
-        let right = CGPoint(x: r.maxX - r.width * 0.16, y: left.y)
-        let radius = (right.x - left.x) / 2
-        p.addArc(center: CGPoint(x: r.midX, y: left.y), radius: radius, startAngle: .degrees(180), endAngle: .degrees(360), clockwise: false)
-        return p
-    }
-
-    static func nodes(in r: CGRect) -> Path {
-        var p = Path()
-        let y = r.minY + r.height * 0.62
-        let d = r.width * 0.2
-        for x in [r.minX + r.width * 0.16, r.maxX - r.width * 0.16] {
-            p.addEllipse(in: CGRect(x: x - d / 2, y: y - d / 2, width: d, height: d))
-        }
-        return p
-    }
-
-    static func ring(in r: CGRect) -> Path {
-        let d = r.width * 0.52
-        return Path(ellipseIn: CGRect(x: r.midX - d / 2, y: r.minY + r.height * 0.62 - d / 2, width: d, height: d))
-    }
-}
-
-struct RelayMark: View {
-    var color: Color = Theme.mesh
-    var body: some View {
-        Canvas { context, size in
-            let r = CGRect(origin: .zero, size: size)
-            let w = size.width
-            context.stroke(RelayMarkShape.ring(in: r), with: .color(color.opacity(0.35)), lineWidth: w * 0.035)
-            context.stroke(RelayMarkShape.arc(in: r), with: .color(color), style: StrokeStyle(lineWidth: w * 0.07, lineCap: .round))
-            context.fill(RelayMarkShape.nodes(in: r), with: .color(color))
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .accessibilityHidden(true)
-    }
-}
-
 /// The mini radar of the path card (76 x 76 artboard units): rings, nearby phones, and the route
 /// to the contact drawn dashed in the mesh colour.
 struct RadarView: View {
@@ -135,41 +93,6 @@ struct Avatar: View {
     }
 }
 
-/// `MESH`, `NET`, `SMS` pill.
-struct TransportBadge: View {
-    let transport: Transport?
-    var body: some View {
-        if let transport, transport != .local {
-            let (fill, text) = Theme.bubble(for: transport)
-            Text(label(transport))
-                .font(Theme.mono(9, weight: .medium))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(fill, in: Capsule())
-                .foregroundStyle(text)
-                .accessibilityLabel(spoken(transport))
-        }
-    }
-
-    private func label(_ t: Transport) -> String {
-        switch t {
-        case .mesh: "MESH"
-        case .node: "NET"
-        case .sms: "SMS"
-        case .local: ""
-        }
-    }
-
-    private func spoken(_ t: Transport) -> String {
-        switch t {
-        case .mesh: "par le mesh"
-        case .node: "par Internet"
-        case .sms: "par SMS chiffré"
-        case .local: ""
-        }
-    }
-}
-
 /// Voice note levels.
 struct Waveform: View {
     let levels: [Float]
@@ -207,7 +130,7 @@ struct EmptyState: View {
                     .font(.system(size: 34, weight: .regular))
                     .foregroundStyle(Theme.secondary)
             } else {
-                RelayMark().frame(width: 64)
+                BrandMark().frame(width: 64)
             }
             Text(title).font(.title3.weight(.semibold)).foregroundStyle(Theme.text)
             Text(message)
@@ -288,32 +211,5 @@ struct FlowRow: Layout {
             rows[rows.count - 1] = row
         }
         return rows
-    }
-}
-
-/// Mesh and node status, shown at the top of lists.
-struct LinkStatusPill: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 5) {
-                Circle().fill(model.meshPeerCount > 0 ? Theme.mesh : Theme.radarDot).frame(width: 7, height: 7)
-                Text("MESH \(model.meshPeerCount)")
-            }
-            HStack(spacing: 5) {
-                Circle().fill(model.nodeState == .ready ? Theme.net : Theme.radarDot).frame(width: 7, height: 7)
-                Text(model.nodeState == .ready ? "NET" : model.nodeEnabled ? "NET …" : "NET OFF")
-            }
-        }
-        .font(Theme.mono(11, weight: .medium))
-        .foregroundStyle(Theme.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .fixedSize()
-        .glassEffect(.regular, in: Capsule())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(model.meshPeerCount) téléphone\(model.meshPeerCount > 1 ? "s" : "") à portée, Internet \(model.nodeState == .ready ? "connecté" : "hors ligne")")
     }
 }

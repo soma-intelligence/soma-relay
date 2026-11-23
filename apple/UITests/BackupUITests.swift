@@ -113,7 +113,7 @@ final class BackupUITests: XCTestCase {
 
     /// Emergency wipe through Réglages, for an identity left by an earlier run.
     private func wipe() {
-        let settings = app.tabBars.buttons["Réglages"]
+        let settings = app.buttons["settings.open"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 15), "neither onboarding nor the tabs")
         settings.tap()
         let wipeButton = app.buttons["Effacement d'urgence"]
@@ -138,7 +138,7 @@ final class BackupUITests: XCTestCase {
         XCTAssertTrue(go.waitForExistence(timeout: 20), "no card after the passkey step")
         go.tap()
         dismissSystemAlerts()
-        let settings = app.tabBars.buttons["Réglages"]
+        let settings = app.buttons["settings.open"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
         settings.tap()
     }
@@ -163,8 +163,8 @@ final class BackupUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if !statusElement.exists || !statusElement.isHittable {
-                if app.tabBars.buttons["Réglages"].exists, !app.navigationBars["Réglages"].exists {
-                    app.tabBars.buttons["Réglages"].tap()
+                if app.buttons["settings.open"].firstMatch.exists, !app.navigationBars["Réglages"].exists {
+                    app.buttons["settings.open"].firstMatch.tap()
                 }
                 if !statusElement.exists { app.swipeUp() }
             }

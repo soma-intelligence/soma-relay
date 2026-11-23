@@ -24,7 +24,7 @@ final class LockUITests: XCTestCase {
     private var lockScreen: XCUIElement { app.otherElements["lock.screen"] }
     private var unlockButton: XCUIElement { app.buttons["Déverrouiller"] }
     private var fallbackButton: XCUIElement { app.buttons["Utiliser Face ID ou le code"] }
-    private var conversationsTab: XCUIElement { app.tabBars.buttons["Conversations"] }
+    private var conversationsTab: XCUIElement { app.tabBars.buttons["Discussions"] }
 
     private func waitGone(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
@@ -36,9 +36,9 @@ final class LockUITests: XCTestCase {
         launch(["-uitest-passkey", "fail", "-uitest-lockseed", "-uitest-deviceauth", "fail", "-lockEnabled", "YES"])
         XCTAssertTrue(lockScreen.waitForExistence(timeout: 10))
         XCTAssertTrue(unlockButton.exists)
-        // Taps do not reach the tabs behind the lock.
-        let settingsTab = app.tabBars.buttons["Réglages"]
-        if settingsTab.exists { settingsTab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
+        // Taps do not reach the avatar (Réglages) behind the lock.
+        let settingsButton = app.buttons["settings.open"].firstMatch
+        if settingsButton.exists { settingsButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
         XCTAssertFalse(app.switches["Verrouiller Relay"].exists)
         XCTAssertTrue(lockScreen.exists)
     }
@@ -143,7 +143,7 @@ final class LockUITests: XCTestCase {
     func testLockCoversOpenSheet() {
         launch(["-uitest-passkey", "ok", "-uitest-lockseed", "-uitest-deviceauth", "fail", "-lockEnabled", "YES", "-lockDelay", "0"])
         XCTAssertTrue(waitGone(lockScreen))
-        app.tabBars.buttons["Réglages"].tap()
+        app.buttons["settings.open"].firstMatch.tap()
         let export = app.buttons["Exporter mon identité"]
         for _ in 0..<8 where !export.isHittable { app.swipeUp() }
         export.tap()
@@ -238,8 +238,8 @@ final class LockUITests: XCTestCase {
     private var lockToggle: XCUIElement { app.switches["Verrouiller Relay"] }
 
     private func openSettingsToggle() {
-        XCTAssertTrue(app.tabBars.buttons["Réglages"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Réglages"].tap()
+        XCTAssertTrue(app.buttons["settings.open"].firstMatch.waitForExistence(timeout: 10))
+        app.buttons["settings.open"].firstMatch.tap()
         for _ in 0..<8 where !lockToggle.isHittable { app.swipeUp() }
         XCTAssertTrue(lockToggle.waitForExistence(timeout: 5))
     }

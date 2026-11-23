@@ -1,64 +1,69 @@
 import SwiftUI
 
-/// Conversations (1:1 and groups) and local mesh channels.
+/// Discussions: 1:1 and groups (local channels live in À proximité). Large title, the network
+/// state in one plain sentence, filter chips, two-line previews.
 struct ConversationsView: View {
     @Environment(AppModel.self) private var model
     @State private var path = NavigationPath()
-    @State private var section = Section.chats
+    @State private var filter = Filter.all
     @State private var showNewGroup = false
     @State private var showJoinChannel = false
     @State private var showAddContact = false
     @State private var showMyCard = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var query = ""
-    @State private var hits: [SearchHit] = []
 
-    enum Section: String, CaseIterable { case chats = "Discussions", channels = "Canaux locaux" }
-
-    private var rows: [ConversationRecord] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !q.isEmpty {
-            return model.conversations.filter { $0.title.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+    enum Filter: CaseIterable { case all, unread, groups, ephemeral
+        var title: String {
+            switch self {
+            case .all: "Toutes"
+            case .unread: "Non lues"
+            case .groups: "Groupes"
+            case .ephemeral: "Éphémères"
+            }
         }
-        return model.conversations.filter { section == .channels ? $0.kind == .channel : $0.kind != .channel }
     }
 
-    private var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var chats: [ConversationRecord] { model.conversations.filter { $0.kind != .channel } }
+
+    private var rows: [ConversationRecord] {
+        switch filter {
+        case .all: chats
+        case .unread: chats.filter { $0.unread > 0 }
+        case .groups: chats.filter { $0.kind == .group }
+        case .ephemeral: chats.filter { $0.expireS > 0 }
+        }
+    }
+
+    private var unreadCount: Int { chats.filter { $0.unread > 0 }.count }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                if isSearching {
-                    searchResults
-                } else {
                 SwiftUI.Section {
-                    Picker("Afficher", selection: $section) {
-                        ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-                    if section == .channels {
-                        Label("Les canaux locaux ne sont pas chiffrés de bout en bout. Tout le monde à portée peut les lire.", systemImage: "antenna.radiowaves.left.and.right")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.secondary)
-                            .listRowBackground(Color.clear)
-                    }
+                    NetworkStatusLine()
+                        .listRowInsets(EdgeInsets(top: 0, leading: DS.Space.margin, bottom: 0, trailing: DS.Space.margin))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                    filterChips
+                        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 6, trailing: 0))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 }
                 ForEach(rows) { conversation in
                     NavigationLink(value: conversation.id) {
                         ConversationRow(conversation: conversation)
                     }
-                    .listRowBackground(Theme.incoming.opacity(0.0))
+                    .navigationLinkIndicatorVisibility(.hidden)
+                    .listRowInsets(EdgeInsets(top: 11, leading: DS.Space.margin, bottom: 11, trailing: DS.Space.margin))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(DS.separator)
+                    .listRowSeparator(conversation.id == rows.last?.id ? .hidden : .automatic, edges: .bottom)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 65 }
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            if conversation.kind == .channel, let name = conversation.peer {
-                                model.leaveChannel(name)
-                            } else {
-                                model.deleteConversation(conversation.id)
-                            }
+                            model.deleteConversation(conversation.id)
                         } label: {
-                            Label(conversation.kind == .channel ? "Quitter" : "Supprimer", systemImage: "trash")
+                            Label("Supprimer", systemImage: "trash")
                         }
                     }
                     .swipeActions(edge: .leading) {
@@ -71,45 +76,30 @@ struct ConversationsView: View {
                         }
                     }
                 }
-                }
             }
             .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.45, bounce: 0.15), value: rows.map(\.id))
-            .searchable(text: $query, prompt: "Noms et messages")
-            .task(id: query) {
-                try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled else { return }
-                hits = model.search(query)
-            }
             .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, 0)
+            .contentMargins(.top, 0, for: .scrollContent)
             .scrollContentBackground(.hidden)
-            .background(Theme.background)
+            .background(DS.background)
             .overlay {
-                if isSearching {
-                    if rows.isEmpty && hits.isEmpty { ContentUnavailableView.search(text: query) }
-                } else if rows.isEmpty {
-                    empty
-                }
+                if rows.isEmpty { empty.padding(.top, 140) }
             }
-            .navigationTitle(section == .chats ? "Conversations" : "Canaux")
+            .dsTabChrome(title: "Discussions")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    LinkStatusPill()
-                }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showMyCard = true } label: { Image(systemName: "qrcode") }
-                        .accessibilityLabel("Ma carte")
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showMyCard = true } label: { Image(systemName: "qrcode.viewfinder").foregroundStyle(DS.label) }
+                        .accessibilityLabel("Ma carte et scanner")
                         .accessibilityHint("Affiche ton QR en plein écran, pour te faire ajouter ou scanner quelqu'un")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Ajouter un contact", systemImage: "person.badge.plus") { showAddContact = true }
                         Button("Nouveau groupe", systemImage: "person.3") { showNewGroup = true }
                         Button("Rejoindre un canal local", systemImage: "number") { showJoinChannel = true }
                     } label: {
-                        Image(systemName: "square.and.pencil")
+                        Image(systemName: "square.and.pencil").foregroundStyle(DS.label)
                     }
-                    .accessibilityLabel("Nouveau")
+                    .accessibilityLabel("Nouveau message")
                 }
             }
             .navigationDestination(for: String.self) { id in
@@ -132,10 +122,7 @@ struct ConversationsView: View {
             .alert("Rejoindre un canal local", isPresented: $showJoinChannel) {
                 JoinChannelField { name in
                     let id = model.joinChannel(name)
-                    if !id.isEmpty {
-                        section = .channels
-                        path.append(id)
-                    }
+                    if !id.isEmpty { path.append(id) }
                 }
             } message: {
                 Text("Un nom comme festival. Tout le monde à portée qui choisit le même nom te lira.")
@@ -150,14 +137,14 @@ struct ConversationsView: View {
                 path.append(AppModel.groupId("stand"))
             case "files", "document":
                 path.append(AppModel.directId(DemoData.malik))
-            case "list-search":
-                query = "plan"
             case "mycard":
                 showMyCard = true
             case "new-group":
                 showNewGroup = true
             case "group-detail", "search-chat":
                 path.append(AppModel.groupId("stand"))
+            case "channel":
+                path.append(AppModel.channelId("festival"))
             default:
                 break
             }
@@ -172,79 +159,82 @@ struct ConversationsView: View {
         }
     }
 
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Filter.allCases, id: \.self) { f in
+                    DSChip(title: f.title, count: f == .unread ? unreadCount : nil, selected: filter == f) {
+                        withAnimation(.snappy(duration: 0.25)) { filter = f }
+                    }
+                }
+            }
+            .padding(.horizontal, DS.Space.margin)
+        }
+        .scrollClipDisabled()
+    }
+
     @ViewBuilder private var empty: some View {
-        if section == .chats {
+        if chats.isEmpty {
             EmptyState(
                 title: "Aucune conversation",
                 message: "Ajoute quelqu'un en scannant son QR, même sans réseau : vos téléphones se parlent directement.",
                 action: ("Ajouter un contact", { showAddContact = true }))
         } else {
             EmptyState(
-                title: "Aucun canal",
-                message: "Un canal local réunit tout le monde à portée du mesh, sans Internet.",
-                systemImage: "number",
-                action: ("Rejoindre un canal", { showJoinChannel = true }))
+                title: filter == .unread ? "Tout est lu" : filter == .groups ? "Aucun groupe" : "Aucune discussion éphémère",
+                message: filter == .unread ? "Les nouveaux messages apparaîtront ici." : "Rien dans ce filtre pour l'instant.",
+                systemImage: filter == .unread ? "checkmark.circle" : filter == .groups ? "person.3" : "timer")
         }
     }
 }
 
-extension ConversationsView {
-    @ViewBuilder fileprivate var searchResults: some View {
-        if !rows.isEmpty {
-            SwiftUI.Section("Conversations") {
-                ForEach(rows) { conversation in
-                    NavigationLink(value: conversation.id) { ConversationRow(conversation: conversation, highlight: query) }
-                        .listRowBackground(Color.clear)
-                }
-            }
-        }
-        if !hits.isEmpty {
-            SwiftUI.Section("Messages") {
-                ForEach(hits) { hit in
-                    NavigationLink(value: ChatRoute(conversationId: hit.conversationId, focus: hit.messageId)) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                if let c = model.conversations.first(where: { $0.id == hit.conversationId }) {
-                                    Avatar(name: c.title, size: 22, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil, photo: model.photo(of: c))
-                                }
-                                Text(hit.title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
-                                Spacer()
-                                Text(ConversationRow.time(hit.ts)).font(Theme.mono(11)).foregroundStyle(Theme.secondary)
-                            }
-                            Text(highlighted(hit.snippet))
-                                .font(.subheadline)
-                                .foregroundStyle(Theme.secondary)
-                                .lineLimit(2)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .listRowBackground(Color.clear)
-                }
-            }
+/// "Mesh actif, 5 téléphones à portée · Nœud connecté": the network state in plain words.
+struct NetworkStatusLine: View {
+    @Environment(AppModel.self) private var model
+
+    private var meshText: String {
+        let n = model.meshPeerCount
+        if n == 0 { return "Personne à portée sur le mesh" }
+        return "Mesh actif, \(n) téléphone\(n > 1 ? "s" : "") à portée"
+    }
+
+    private var nodeText: String? {
+        guard model.nodeEnabled else { return nil }
+        switch model.nodeState {
+        case .ready: return "Nœud connecté"
+        case .off: return "Nœud hors ligne"
+        case .connecting, .authenticating: return "Connexion au nœud…"
+        case .failed: return "Nœud injoignable"
         }
     }
 
-    fileprivate func highlighted(_ text: String) -> AttributedString {
-        Self.highlight(text, query: query, font: .subheadline.weight(.semibold))
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            line(compact: false)
+            line(compact: true)
+        }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(DS.label2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([meshText, nodeText].compactMap { $0 }.joined(separator: ", "))
     }
 
-    /// Every match of the query in bold, on a soft mesh-coloured mark.
-    static func highlight(_ text: String, query: String, font: Font) -> AttributedString {
-        var out = AttributedString(text)
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return out }
-        var start = out.startIndex
-        while start < out.endIndex, let r = out[start...].range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) {
-            out[r].foregroundColor = Theme.text
-            out[r].font = font
-            out[r].backgroundColor = Theme.mesh.opacity(0.18)
-            start = r.upperBound
+    private func line(compact: Bool) -> some View {
+        HStack(spacing: 7) {
+            DSStatusDot(active: model.meshPeerCount > 0)
+            Text(compact && model.meshPeerCount > 0 ? "Mesh, \(model.meshPeerCount) à portée" : meshText)
+            if let nodeText {
+                Text("·").foregroundStyle(DS.label3)
+                Image(systemName: "globe").font(.system(size: 13))
+                Text(nodeText)
+            }
         }
-        return out
+        .lineLimit(1)
+        .fixedSize()
     }
 }
 
-private struct JoinChannelField: View {
+struct JoinChannelField: View {
     let onJoin: (String) -> Void
     @State private var name = ""
 
@@ -263,68 +253,78 @@ struct ConversationRow: View {
     /// Search text to mark in the title.
     var highlight = ""
 
+    private var unread: Bool { conversation.unread > 0 }
+    private var typing: Bool { model.isTyping(conversation.id) }
+
+    private var verified: Bool {
+        conversation.kind == .direct && conversation.peer.flatMap { model.contact($0)?.verified } == true
+    }
+
     var body: some View {
-        HStack(spacing: 12) {
-            Avatar(
-                name: conversation.title, size: 50, tint: Theme.incoming,
+        HStack(alignment: .top, spacing: 13) {
+            DSAvatar(
+                name: conversation.title, size: 52,
                 icon: conversation.kind == .channel ? "number" : conversation.kind == .group ? "person.3.fill" : nil,
-                photo: model.photo(of: conversation))
-                .overlay(alignment: .bottomTrailing) {
-                    if conversation.kind == .direct, let peer = conversation.peer, model.contact(peer)?.verified == true {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.mesh)
-                            .background(Circle().fill(Theme.background).padding(-1))
-                    }
-                }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(ConversationsView.highlight(conversation.title, query: highlight, font: .body.weight(.bold)))
-                        .font(.body.weight(conversation.unread > 0 ? .semibold : .medium))
-                        .foregroundStyle(Theme.text)
+                photo: model.photo(of: conversation), verified: verified)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(SearchTabView.highlight(conversation.title, query: highlight, font: .system(size: 17, weight: .bold)))
+                        .font(.system(size: 17, weight: unread ? .semibold : .medium))
+                        .foregroundStyle(DS.label)
                         .lineLimit(1)
                     if conversation.isMuted() {
                         Image(systemName: "bell.slash.fill")
-                            .font(.caption2)
-                            .foregroundStyle(Theme.secondary)
+                            .font(.system(size: 12))
+                            .foregroundStyle(DS.label3)
                             .accessibilityLabel("en sourdine")
                     }
                     if conversation.expireS > 0 {
                         Image(systemName: "timer")
-                            .font(.caption2)
-                            .foregroundStyle(Theme.secondary)
+                            .font(.system(size: 12))
+                            .foregroundStyle(DS.label3)
                             .accessibilityLabel("messages éphémères")
                     }
                     Spacer(minLength: 6)
                     Text(Self.time(conversation.lastAt))
-                        .font(Theme.mono(11))
-                        .foregroundStyle(conversation.unread > 0 ? Theme.mesh : Theme.secondary)
+                        .font(.system(size: 15, weight: unread ? .medium : .regular))
+                        .monospacedDigit()
+                        .foregroundStyle(unread ? DS.accent : DS.label2)
                 }
-                HStack(spacing: 6) {
-                    TransportBadge(transport: conversation.lastTransport)
-                    Text(model.isTyping(conversation.id) ? "écrit…" : model.preview(of: conversation))
-                        .font(.subheadline.weight(conversation.unread > 0 ? .medium : .regular))
-                        .foregroundStyle(conversation.unread > 0 ? Theme.text.opacity(0.8) : Theme.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if conversation.unread > 0 {
-                        Text("\(conversation.unread)")
-                            .font(.caption.weight(.bold))
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.onMesh)
-                            .padding(.horizontal, 7)
-                            .frame(minWidth: 22, minHeight: 22)
-                            .background(conversation.isMuted() ? Theme.dashed : Theme.mesh, in: Capsule())
+                HStack(alignment: .top, spacing: 10) {
+                    preview
+                        .font(.system(size: 15))
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if unread {
+                        DSCountBadge(count: conversation.unread, muted: conversation.isMuted())
+                            .padding(.top, 1)
                             .contentTransition(.numericText())
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
             }
+            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         }
-        .padding(.vertical, 6)
         .animation(.snappy(duration: 0.25), value: conversation.unread)
         .accessibilityElement(children: .combine)
-        .accessibilityHint(conversation.unread > 0 ? "\(conversation.unread) non lus" : "")
+        .accessibilityHint(unread ? "\(conversation.unread) non lus" : "")
+    }
+
+    /// The preview, with a transport glyph only when it is unusual: globe for the node, amber
+    /// bubble for the SMS fallback. The mesh is the normal case and shows nothing.
+    private var preview: Text {
+        if typing { return Text("écrit…").foregroundStyle(DS.accent) }
+        let body = Text(model.preview(of: conversation)).foregroundStyle(unread ? DS.label.opacity(0.86) : DS.label2)
+        switch conversation.lastTransport {
+        case .node?:
+            let glyph = Text(Image(systemName: "globe")).font(.system(size: 12)).foregroundStyle(DS.label3)
+            return Text("\(glyph) \(body)")
+        case .sms?:
+            let glyph = Text(Image(systemName: "message.fill")).font(.system(size: 12)).foregroundStyle(DS.sms)
+            return Text("\(glyph) \(body)")
+        default:
+            return body
+        }
     }
 
     static func time(_ ms: Int64) -> String {

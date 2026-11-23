@@ -69,7 +69,7 @@ struct Composer: View {
                     recordingStrip
                 } else {
                     attachButton
-                    TextField(editing != nil ? "Message modifié" : "Message chiffré", text: $text, axis: .vertical)
+                    TextField(editing != nil ? "Message modifié" : isChannel ? "Message (non chiffré)" : "Message chiffré", text: $text, axis: .vertical)
                         .font(.system(size: 16))
                         .foregroundStyle(Theme.text)
                         .lineLimit(1...6)
