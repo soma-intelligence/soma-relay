@@ -279,11 +279,9 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
                     nouveau navigateur ou sur un nouveau téléphone.
                   </small>
                 </span>
-                {vault.state === 'off' && (
-                  <button className="btn" onClick={() => void setUpPasskey()} disabled={vault.busy}>
-                    {vault.busy ? 'Création…' : 'Créer un passkey'}
-                  </button>
-                )}
+                <button className="btn" onClick={() => void setUpPasskey()} disabled={vault.busy}>
+                  {vault.busy ? 'Création…' : vault.state === 'off' ? 'Créer un passkey' : 'Changer de passkey'}
+                </button>
               </div>
               {(vaultText || passkeyErr) && (
                 <p className={passkeyErr || vault.state === 'failed' ? 'error' : 'hint'} role="status" style={{ padding: '0 0 10px' }}>

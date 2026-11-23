@@ -1799,7 +1799,10 @@ export class Relay {
 
   /** Sets (bytes) or removes (null) my photo and tells everyone. */
   async setMyAvatar(jpeg: Uint8Array | null) {
-    if (this.vaultRec?.photo) delete this.vaultRec.photo
+    if (this.vaultRec?.photo) {
+      delete this.vaultRec.photo
+      await this.saveVault()
+    }
     const cur = this.snap.profiles.me
     if (jpeg) await this.putProfile({ ...cur, id: 'me', avatar: toB64(jpeg), hash: await avatarHash(jpeg), ts: Date.now() })
     else if (cur?.avatar) await this.putProfile({ id: 'me', ts: Date.now() })
@@ -2208,8 +2211,14 @@ export class Relay {
       const userName = settings.handle || this.engine.displayName()
       const reg = await registerPasskey(userName, userHandle)
       const a = await assertPasskey(reg.credentialId)
-      const rec: VaultRecord = { credentialId: toB64(a.credentialId), userHandle: toB64(userHandle), dirty: false }
-      // `prf` of the registration is not relied on: the assertion outputs decide.
+      // A restored vault's channel list and photo come along to the new passkey's vault.
+      const rec: VaultRecord = {
+        credentialId: toB64(a.credentialId),
+        userHandle: toB64(userHandle),
+        dirty: false,
+        channelsPrefs: this.vaultRec?.channelsPrefs,
+        photo: this.vaultRec?.photo,
+      }      // `prf` of the registration is not relied on: the assertion outputs decide.
       if (!a.second) {
         this.vaultRec = rec
         await this.saveVault()

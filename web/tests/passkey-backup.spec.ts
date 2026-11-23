@@ -138,7 +138,7 @@ test('restore with no backup for the passkey says so', async ({ browser }) => {
 
 test('a vault opened and sealed again by the web keeps channelsPrefs and the photo byte for byte', async ({ browser }) => {
   const tag = Date.now().toString(36)
-  const { page } = await open(browser, `pk-r-${tag}`, true)
+  const { page, auth } = await open(browser, `pk-r-${tag}`, true)
   const wasm = await import('../src/core/pkg/relay_wasm.js')
   wasm.initSync({ module: readFileSync(new URL('../src/core/pkg/relay_wasm_bg.wasm', import.meta.url)) })
 
@@ -216,6 +216,35 @@ test('a vault opened and sealed again by the web keeps channelsPrefs and the pho
   const second2 = wasm.openVault(key, id, await stored()) as { channelsPrefs: Uint8Array; photo: Uint8Array | null }
   expect(Buffer.from(second2.channelsPrefs).equals(Buffer.from(channelsPrefs))).toBe(true)
   expect(second2.photo && Buffer.from(second2.photo).equals(Buffer.from(photo))).toBe(true)
+
+  // A new passkey made from Settings after the restore carries the channels and the photo too.
+  const firstId = id
+  const newPut = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().includes('/v1/vault/') && !r.url().includes(firstId) && r.ok(), { timeout: 30_000 })
+  await page.getByRole('button', { name: 'Changer de passkey' }).click()
+  const newUrl = (await newPut).url()
+  const { credentials } = (await auth!.cdp.send('WebAuthn.getCredentials', { authenticatorId: auth!.authenticatorId })) as {
+    credentials: { credentialId: string }[]
+  }
+  const newCred = credentials.map((c) => Uint8Array.from(Buffer.from(c.credentialId, 'base64'))).find((c) => wasm.vaultId(c) !== firstId)!
+  const newId = wasm.vaultId(newCred)
+  expect(newUrl.endsWith(newId)).toBe(true)
+  const newSecond = await page.evaluate(async ([cid, salt]) => {
+    const r = (await navigator.credentials.get({
+      publicKey: {
+        rpId: 'localhost',
+        challenge: new Uint8Array(32),
+        userVerification: 'required',
+        allowCredentials: [{ type: 'public-key', id: new Uint8Array(cid) }],
+        extensions: { prf: { eval: { first: new Uint8Array(salt), second: new Uint8Array(salt) } } } as never,
+      },
+    })) as PublicKeyCredential
+    const out = (r.getClientExtensionResults() as { prf?: { results?: { second?: ArrayBuffer } } }).prf?.results?.second
+    return Array.from(new Uint8Array(out!))
+  }, [Array.from(newCred), salt] as const)
+  const newBlob = new Uint8Array(await (await fetch(`${BASE}/v1/vault/${newId}`)).arrayBuffer())
+  const third = wasm.openVault(wasm.vaultKey(Uint8Array.from(newSecond)), newId, newBlob) as { channelsPrefs: Uint8Array; photo: Uint8Array | null }
+  expect(Buffer.from(third.channelsPrefs).equals(Buffer.from(channelsPrefs))).toBe(true)
+  expect(third.photo && Buffer.from(third.photo).equals(Buffer.from(photo))).toBe(true)
   ws.close()
 })
 
