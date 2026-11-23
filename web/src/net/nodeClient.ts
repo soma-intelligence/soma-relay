@@ -3,7 +3,7 @@
 // hello -> challenge -> auth -> ready, then register (card), send / env / ack, presence.
 // Reconnects with exponential backoff and jitter (1 s to 30 s), pings every 25 s.
 
-import { fromB64, toB64Url, utf8 } from '../lib/bytes'
+import { fromB64, toB64, toB64Url, utf8 } from '../lib/bytes'
 import type { Engine } from '../core/engine'
 
 export type NodeEvent =
@@ -23,6 +23,14 @@ function wsUrl(base: string): string {
   const u = new URL('/v1/ws', base)
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
   return u.toString()
+}
+
+/** `GET /v1/vault/{id}`: the blob, or null when the node has none. Throws on a network failure. */
+export async function getVault(base: string, id: string): Promise<Uint8Array | null> {
+  const r = await fetch(new URL(`/v1/vault/${id}`, base).toString(), { cache: 'no-store' })
+  if (r.status === 404) return null
+  if (!r.ok) throw new Error(`vault read failed (${r.status})`)
+  return new Uint8Array(await r.arrayBuffer())
 }
 
 export class NodeClient {
@@ -291,6 +299,28 @@ export class NodeClient {
       /* not JSON */
     }
     return { ok: false, status: r.status, code }
+  }
+
+  /**
+   * `PUT /v1/vault/{id}` (docs/node-protocol.md). The mailbox must have authenticated over the
+   * WebSocket first (`unknown_mailbox` otherwise). Returns '' when written, else the error code.
+   */
+  async putVault(id: string, blob: Uint8Array, sig: Uint8Array): Promise<string> {
+    const r = await fetch(this.url(`/v1/vault/${id}`), {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-relay-mailbox': this.engine.mailboxHex(),
+        'x-relay-sig': toB64(sig),
+      },
+      body: new Blob([blob.slice().buffer as ArrayBuffer]),
+    })
+    if (r.ok) return ''
+    try {
+      return String(((await r.json()) as { error?: string }).error ?? `http_${r.status}`)
+    } catch {
+      return `http_${r.status}`
+    }
   }
 
   async health(): Promise<boolean> {

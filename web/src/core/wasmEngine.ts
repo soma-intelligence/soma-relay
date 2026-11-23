@@ -17,6 +17,7 @@ import type {
   EnvelopeHeader,
   Group,
   Inbound,
+  VaultCrypto,
 } from './engine'
 import { RelayError } from './engine'
 import { toHex } from '../lib/bytes'
@@ -32,6 +33,12 @@ interface PkgModule {
   RelayEngine: RawClass
   sealExport?: (passphrase: string, state: Uint8Array) => string
   openExport?: (passphrase: string | null | undefined, text: string) => Uint8Array
+  prfSaltUnlock?: () => Uint8Array
+  prfSaltBackup?: () => Uint8Array
+  vaultKey?: (prf: Uint8Array) => Uint8Array
+  vaultId?: (cred: Uint8Array) => string
+  sealVault?: (key: Uint8Array, id: string, plain: unknown) => Uint8Array
+  openVault?: (key: Uint8Array, id: string, blob: Uint8Array) => Record<string, unknown>
 }
 
 const pkgLoaders = import.meta.glob('./pkg/relay_wasm.js')
@@ -145,6 +152,11 @@ class WasmEngineImpl implements Engine {
 
   callKey = (fp: string, callId: string) => bytes(this.call('callKey', fp, callId))
 
+  get signVault(): ((id: string, blob: Uint8Array) => Uint8Array) | undefined {
+    if (typeof this.raw.signVault !== 'function') return undefined
+    return (id: string, blob: Uint8Array) => bytes(this.call('signVault', id, blob))
+  }
+
   get signDirectoryEntry(): ((handle: string) => DirectoryEntry) | undefined {
     if (typeof this.raw.signDirectoryEntry !== 'function') return undefined
     return (handle: string) => json<DirectoryEntry>(this.call('signDirectoryEntry', handle))
@@ -166,6 +178,27 @@ class WasmEngineImpl implements Engine {
     }
     if (env.length < 35 || env[0] !== 1) return null
     return { kind: env[1], tag: toHex(env.slice(2, 18)), id: toHex(env.slice(19, 35)) }
+  }
+}
+
+function vaultOf(m: PkgModule): VaultCrypto | undefined {
+  if (!m.vaultKey || !m.vaultId || !m.sealVault || !m.openVault || !m.prfSaltUnlock || !m.prfSaltBackup) return undefined
+  return {
+    saltUnlock: () => bytes(m.prfSaltUnlock!()),
+    saltBackup: () => bytes(m.prfSaltBackup!()),
+    vaultKey: (prf) => bytes(m.vaultKey!(prf)),
+    vaultId: (cred) => m.vaultId!(cred),
+    sealVault: (key, id, plain) => bytes(m.sealVault!(key, id, plain)),
+    openVault: (key, id, blob) => {
+      const o = m.openVault!(key, id, blob) as Record<string, unknown>
+      return {
+        engine: bytes(o.engine),
+        handle: typeof o.handle === 'string' ? o.handle : null,
+        nodeUrl: typeof o.nodeUrl === 'string' ? o.nodeUrl : null,
+        channelsPrefs: bytes(o.channelsPrefs),
+        photo: o.photo ? bytes(o.photo) : null,
+      }
+    },
   }
 }
 
@@ -193,6 +226,7 @@ export async function loadWasmFactory(): Promise<EngineFactory | null> {
         }
       },
       // Older pkgs lack these; the client then keeps the clear JSON backup.
+      vault: vaultOf(mod),
       sealExport: mod.sealExport ? (passphrase, state) => mod.sealExport!(passphrase, state) : undefined,
       openExport: mod.openExport ? (passphrase, text) => bytes(mod.openExport!(passphrase, text)) : undefined,
     }

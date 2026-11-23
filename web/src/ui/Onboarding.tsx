@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { needsPassphrase, relay } from '../state/relay'
 import { useRelay } from './common'
 import { CipherQR } from './CipherQR'
+import { PasskeyRestoreError } from '../state/vaultSync'
 
 function Mark() {
   return (
@@ -26,6 +27,25 @@ export function Onboarding() {
   // A sealed .relaykey waiting for its passphrase.
   const [sealed, setSealed] = useState<string | null>(null)
   const [passphrase, setPassphrase] = useState('')
+  const [passkeyOk, setPasskeyOk] = useState(false)
+  useEffect(() => {
+    let live = true
+    void relay.passkeyAvailable().then((ok) => live && setPasskeyOk(ok))
+    return () => {
+      live = false
+    }
+  }, [snap.engineKind])
+
+  const restorePasskey = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await relay.restoreFromPasskey()
+    } catch (err) {
+      setError(err instanceof PasskeyRestoreError ? err.text : 'Restauration impossible.')
+      setBusy(false)
+    }
+  }
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -153,6 +173,11 @@ export function Onboarding() {
           <button className="btn" onClick={() => fileRef.current?.click()}>
             Restaurer une sauvegarde
           </button>
+          {passkeyOk && (
+            <button className="btn" onClick={() => void restorePasskey()} disabled={busy}>
+              Restaurer avec un passkey
+            </button>
+          )}
         </div>
         <input
           ref={fileRef}

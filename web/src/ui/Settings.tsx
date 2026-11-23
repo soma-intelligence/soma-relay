@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { EXPORT_MIN_PASSPHRASE, LOCAL_BUS_AVAILABLE, relay } from '../state/relay'
 import { Avatar, downloadBlob, useRelay } from './common'
 import { AvatarPicker } from './PhotoEditor'
 import { frameE2eeSupported } from '../calls/callManager'
+import { PasskeyError } from '../net/passkey'
 
 export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
   const snap = useRelay()
@@ -16,6 +17,40 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
   const notif = typeof Notification !== 'undefined' ? Notification.permission : 'denied'
   const [, bump] = useState(0)
   const notifOn = snap.settings.notifications && notif === 'granted'
+  const [passkeyOk, setPasskeyOk] = useState(false)
+  const [passkeyErr, setPasskeyErr] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void relay.passkeyAvailable().then((ok) => live && setPasskeyOk(ok))
+    return () => {
+      live = false
+    }
+  }, [])
+  const vault = snap.vault
+  const vaultText =
+    vault.state === 'lockOnly'
+      ? 'Ton gestionnaire ne prend pas en charge la sauvegarde'
+      : vault.state === 'saved' && vault.at
+        ? 'Sauvegardé à ' + new Date(vault.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+        : vault.state === 'pending'
+          ? 'En attente du réseau'
+          : vault.state === 'failed'
+            ? (vault.message ?? 'Sauvegarde impossible.')
+            : ''
+  const setUpPasskey = async () => {
+    setPasskeyErr(null)
+    try {
+      await relay.setUpPasskey()
+    } catch (err) {
+      setPasskeyErr(
+        err instanceof PasskeyError && err.code === 'cancelled'
+          ? 'Création du passkey annulée.'
+          : err instanceof PasskeyError
+            ? 'Les passkeys ne sont pas disponibles sur ce navigateur.'
+            : 'Passkey impossible à créer pour le moment.',
+      )
+    }
+  }
 
   return (
     <div className="scroll">
@@ -52,7 +87,7 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
           <div className="set-row">
             <span className="lbl">
               Empreinte
-              <small className="mono">{/* A break may only follow a dot, so no line starts with one. */}
+              <small className="mono" data-testid="my-fingerprint">{/* A break may only follow a dot, so no line starts with one. */}
                 {me.fingerprint.toUpperCase().match(/.{1,4}/g)?.slice(0, 8).join('·\u200b')}</small>
             </span>
             <button className="btn" onClick={onMyCode}>
@@ -231,6 +266,33 @@ export function SettingsView({ onMyCode }: { onMyCode: () => void }) {
             />
           </label>
         </div>
+
+        {passkeyOk && (
+          <>
+            <div className="group-title">Sécurité</div>
+            <div className="group">
+              <div className="set-row">
+                <span className="lbl">
+                  Sauvegarde par passkey
+                  <small>
+                    Ton identité, tes contacts et tes groupes, chiffrés par ton passkey. Pour la retrouver dans un
+                    nouveau navigateur ou sur un nouveau téléphone.
+                  </small>
+                </span>
+                {vault.state === 'off' && (
+                  <button className="btn" onClick={() => void setUpPasskey()} disabled={vault.busy}>
+                    {vault.busy ? 'Création…' : 'Créer un passkey'}
+                  </button>
+                )}
+              </div>
+              {(vaultText || passkeyErr) && (
+                <p className={passkeyErr || vault.state === 'failed' ? 'error' : 'hint'} role="status" style={{ padding: '0 0 10px' }}>
+                  {passkeyErr ?? vaultText}
+                </p>
+              )}
+            </div>
+          </>
+        )}
 
         <div className="group-title">Données</div>
         <div className="group">

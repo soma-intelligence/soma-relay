@@ -251,15 +251,38 @@ export interface Engine {
    * `PUT /v1/directory/{handle}` (`X-Relay-Sig`). Absent in older cores: no handle publishing.
    */
   signDirectoryEntry?(handle: string): DirectoryEntry
+  /** Ed25519 signature for `PUT /v1/vault/{id}` (relay-core only). */
+  signVault?(id: string, blob: Uint8Array): Uint8Array
 
   // Client-side helper, not in the core: reads the postcard header of an envelope.
   envelopeHeader(envelope: Uint8Array): EnvelopeHeader | null
+}
+
+/** What the backup blob carries (docs/specs/2026-11-22-passkey-unlock-backup.md section 3). */
+export interface VaultPlain {
+  engine: Uint8Array
+  handle: string | null
+  nodeUrl: string | null
+  /** UTF-8 JSON array of channel names. */
+  channelsPrefs: Uint8Array
+  photo: Uint8Array | null
+}
+
+/** Passkey vault crypto of relay-core; absent in the mock engine, which has no backup. */
+export interface VaultCrypto {
+  saltUnlock(): Uint8Array
+  saltBackup(): Uint8Array
+  vaultKey(prfSecond: Uint8Array): Uint8Array
+  vaultId(credentialId: Uint8Array): string
+  sealVault(key: Uint8Array, id: string, plain: VaultPlain): Uint8Array
+  openVault(key: Uint8Array, id: string, blob: Uint8Array): VaultPlain
 }
 
 export interface EngineFactory {
   readonly kind: 'wasm' | 'mock'
   create(displayName: string): Engine
   restore(state: Uint8Array): Engine
+  vault?: VaultCrypto
   /**
    * `.relaykey` text: `relaystate2:` + the state sealed with a passphrase (Argon2id 64 MiB, then
    * AES-256-GCM). relay-core only: absent in the mock, which keeps the clear JSON backup.

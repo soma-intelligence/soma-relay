@@ -48,7 +48,7 @@ export function App() {
 
   const prevPhase = usePrevious(snap.phase)
   useEffect(() => {
-    if (prevPhase === 'onboarding' && snap.phase === 'ready') setWelcome(true)
+    if (prevPhase === 'onboarding' && snap.phase === 'ready' && !relay.consumeRestoredFlag()) setWelcome(true)
   }, [prevPhase, snap.phase])
 
   if (snap.phase === 'loading') return <div className="onboard" aria-busy="true" />

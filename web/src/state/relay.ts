@@ -10,9 +10,21 @@ import { loadEngineFactory } from '../core/loadEngine'
 import { Storage } from '../lib/storage'
 import { localGet, localSet, PROFILE } from '../lib/profile'
 import { sha3_256 } from '@noble/hashes/sha3.js'
-import { buf, fpShort, fromB64, sha256, toB64, toB64Url, toHex, utf8, uuidv7 } from '../lib/bytes'
+import { buf, fpShort, fromB64, randomBytes, sha256, toB64, toB64Url, toHex, utf8, uuidv7 } from '../lib/bytes'
 import { avatarDataUrl, avatarHash, checkAvatar } from '../lib/avatar'
-import { NodeClient, type NodeEvent } from '../net/nodeClient'
+import { getVault, NodeClient, resolveNodeUrl, type NodeEvent } from '../net/nodeClient'
+import { assertPasskey, PasskeyError, prfAvailable, registerPasskey, setPrfSalts } from '../net/passkey'
+import {
+  PasskeyRestoreError,
+  RESTORED_TOAST,
+  RETRYABLE,
+  VAULT_DEBOUNCE_MS,
+  VAULT_OFF,
+  refusedMessage,
+  statusOf,
+  type VaultRecord,
+  type VaultStatus,
+} from './vaultSync'
 import { LocalBus } from '../net/localBus'
 import { isDataChannelSignal, P2P } from '../net/p2p'
 import { CallManager, type CallEndInfo } from '../calls/callManager'
@@ -85,6 +97,8 @@ export interface Snapshot {
   /** Photos and names by fingerprint, 'g:' + group id, and 'me'. */
   profiles: Record<string, PeerProfile>
   banner: Banner | null
+  /** Passkey backup (Settings > Sécurité). */
+  vault: VaultStatus
 }
 
 const INLINE_MAX = 48 * 1024
@@ -227,6 +241,7 @@ export class Relay {
       liveShares: new Set(),
       profiles: {},
       banner: null,
+      vault: VAULT_OFF,
     }
     this.p2p = new P2P(
       () => this.engine?.fingerprintHex() ?? '',
@@ -243,6 +258,8 @@ export class Relay {
     )
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && this.snap.activeConv) void this.markRead(this.snap.activeConv)
+      // Going to the background: the backup goes now, not 10 s later.
+      if (document.visibilityState === 'hidden') void this.flushVault()
     })
     // A click on a notification asks this window to open the conversation.
     if (swSupported())
@@ -376,6 +393,7 @@ export class Relay {
     this.sentProfile = (await this.store!.getJson<Record<string, string>>('meta', 'profile-sent')) ?? {}
     this.renamed = new Set((await this.store!.getJson<string[]>('meta', 'renamed')) ?? [])
     for (const g of e.groups()) this.groupMembers.set(g.id, [...g.members])
+    await this.loadVault()
     this.set({
       profiles,
       phase: 'ready',
@@ -403,7 +421,9 @@ export class Relay {
   persist() {
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
-      if (this.engine && this.store) void this.store.putBytes('meta', 'engine', this.engine.exportState())
+      if (this.engine && this.store) {
+        void this.store.putBytes('meta', 'engine', this.engine.exportState()).then(() => this.markVaultDirty())
+      }
     }, 300)
   }
 
@@ -450,6 +470,7 @@ export class Relay {
       case 'state':
         this.set({ node: ev.state })
         if (ev.state === 'online') {
+          void this.retryVaultIfOwed()
           void this.flushOutbox()
           this.pollPresence()
         }
@@ -1736,6 +1757,7 @@ export class Relay {
   private async putProfile(p: PeerProfile) {
     this.set({ profiles: { ...this.snap.profiles, [p.id]: p } })
     await this.store?.putJson('profiles', p.id, p)
+    if (p.id === 'me') this.markVaultDirty()
   }
 
   private async dropProfile(id: string) {
@@ -1979,6 +2001,7 @@ export class Relay {
     this.set({ settings })
     if (this.engine && ('nodeUrl' in patch || 'localBus' in patch)) this.startTransports()
     if ('p2p' in patch && !settings.p2p) this.p2p.closeAll()
+    if ('nodeUrl' in patch || 'handle' in patch) this.markVaultDirty()
   }
 
   setDisplayName(name: string) {
@@ -2021,6 +2044,240 @@ export class Relay {
         return 'De 3 à 32 caractères : lettres, chiffres, point, tiret.'
       return 'Nœud injoignable.'
     }
+  }
+
+  // Passkey backup (spec 2026-11-22-passkey-unlock-backup, sections 3 and 6)
+
+  private vaultRec: VaultRecord | null = null
+  private vaultTimer: ReturnType<typeof setTimeout> | null = null
+  private vaultUpload: Promise<boolean> | null = null
+  private vaultInFlight = 0
+  /** Bumped by every dirty mark: an upload only clears the flag for the state it carried. */
+  private vaultGen = 0
+
+  private restoredFlag = false
+
+  /** True once after a passkey restore: the restored person skips the "Voilà ton code" screen. */
+  consumeRestoredFlag(): boolean {
+    const f = this.restoredFlag
+    this.restoredFlag = false
+    return f
+  }
+
+  /** The passkey step can be offered: relying party we own, WebAuthn, and the core has the vault. */
+  async passkeyAvailable(): Promise<boolean> {
+    if (!this.factory?.vault) return false
+    return prfAvailable()
+  }
+
+  private setVault(patch: Partial<VaultStatus>) {
+    this.set({ vault: { ...this.snap.vault, ...patch } })
+  }
+
+  private async loadVault() {
+    this.vaultRec = (await this.store?.getJson<VaultRecord>('meta', 'vault')) ?? null
+    this.set({ vault: statusOf(this.vaultRec) })
+  }
+
+  private async saveVault() {
+    if (this.vaultRec) await this.store?.putJson('meta', 'vault', this.vaultRec)
+  }
+
+  /** The engine state, the handle, the node and my photo changed: upload 10 s after the last change. */
+  markVaultDirty(debounced = true) {
+    const rec = this.vaultRec
+    if (!rec?.key) return
+    rec.dirty = true
+    this.vaultGen++
+    void this.saveVault()
+    if (this.vaultTimer) clearTimeout(this.vaultTimer)
+    this.vaultTimer = null
+    if (this.snap.vault.state === 'saved') this.setVault({ state: 'pending' })
+    if (debounced) this.vaultTimer = setTimeout(() => void this.flushVault(), VAULT_DEBOUNCE_MS)
+  }
+
+  private async retryVaultIfOwed() {
+    if (this.vaultRec?.key && this.vaultRec.dirty) await this.flushVault()
+  }
+
+  /**
+   * Uploads the sealed state if an upload is owed. Returns once the state current at the call is
+   * on the node or an attempt for it has ended; a caller that finds an upload running waits for
+   * it, then uploads again if a newer state is owed.
+   */
+  async flushVault(): Promise<void> {
+    for (;;) {
+      if (this.vaultTimer) clearTimeout(this.vaultTimer)
+      this.vaultTimer = null
+      if (this.vaultUpload) {
+        const carried = this.vaultInFlight
+        await this.vaultUpload
+        if (!this.vaultRec?.dirty || this.vaultGen === carried) return
+        continue
+      }
+      if (!this.vaultRec?.key || !this.vaultRec.dirty || !this.engine) return
+      this.vaultInFlight = this.vaultGen
+      const task = this.uploadVaultOnce().finally(() => {
+        this.vaultUpload = null
+      })
+      this.vaultUpload = task
+      if (!(await task) || !this.vaultRec?.dirty) return
+    }
+  }
+
+  private async uploadVaultOnce(): Promise<boolean> {
+    const rec = this.vaultRec
+    const e = this.engine
+    const crypto = this.factory?.vault
+    if (!rec?.key || !e || !crypto || !this.node) return false
+    if (!e.signVault) return false
+    const carried = this.vaultGen
+    const id = crypto.vaultId(fromB64(rec.credentialId))
+    let blob: Uint8Array
+    try {
+      const photo = this.snap.profiles.me?.avatar ? fromB64(this.snap.profiles.me.avatar) : null
+      const nodeUrl = this.snap.settings.nodeUrl.trim()
+      blob = crypto.sealVault(fromB64(rec.key), id, {
+        engine: e.exportState(),
+        handle: this.snap.settings.handle || null,
+        nodeUrl: nodeUrl || null,
+        // The web client has no channel preferences: the same JSON array the apps write.
+        channelsPrefs: utf8('[]'),
+        photo: photo && photo.length <= 64 * 1024 ? photo : null,
+      })
+    } catch (err) {
+      const big = err instanceof Error && /TooLarge/.test(`${err.name} ${err.message}`)
+      this.setVault({ state: 'failed', message: big ? 'Sauvegarde trop lourde pour le nœud.' : 'Sauvegarde impossible à chiffrer.' })
+      return false
+    }
+    this.setVault({ busy: true })
+    try {
+      const code = await this.node.putVault(id, blob, e.signVault(id, blob))
+      if (this.vaultRec !== rec) return false
+      if (code === '') {
+        rec.savedAt = Date.now()
+        if (this.vaultGen === carried) rec.dirty = false
+        await this.saveVault()
+        this.set({ vault: { ...statusOf(rec), busy: false } })
+        return true
+      }
+      if (RETRYABLE.has(code)) this.setVault({ state: 'pending', busy: false, message: undefined })
+      else this.setVault({ state: 'failed', busy: false, message: refusedMessage(code) })
+      return false
+    } catch {
+      // No network: kept for the next node connection.
+      if (this.vaultRec === rec) this.setVault({ state: 'pending', busy: false, message: undefined })
+      return false
+    }
+  }
+
+  /**
+   * Creates the passkey, runs one assertion for both PRF outputs, keeps the vault key and uploads
+   * the first backup. A passkey manager without PRF still gets its passkey but no backup
+   * (`lockOnly`). Passkey failures throw `PasskeyError`.
+   */
+  async setUpPasskey(): Promise<void> {
+    const crypto = this.factory?.vault
+    if (!crypto || !this.engine || !this.store || !this.engine.signVault) throw new PasskeyError('unavailable')
+    if (this.snap.vault.busy) return
+    this.setVault({ busy: true, message: undefined })
+    try {
+      setPrfSalts({ unlock: crypto.saltUnlock(), backup: crypto.saltBackup() })
+      const userHandle = this.vaultRec ? fromB64(this.vaultRec.userHandle) : randomBytes(16)
+      const settings = this.snap.settings
+      const userName = settings.handle || this.engine.displayName()
+      const reg = await registerPasskey(userName, userHandle)
+      const a = await assertPasskey(reg.credentialId)
+      const rec: VaultRecord = { credentialId: toB64(a.credentialId), userHandle: toB64(userHandle), dirty: false }
+      // `prf` of the registration is not relied on: the assertion outputs decide.
+      if (!a.second) {
+        this.vaultRec = rec
+        await this.saveVault()
+        this.set({ vault: statusOf(rec) })
+        return
+      }
+      rec.key = toB64(crypto.vaultKey(a.second))
+      this.vaultRec = rec
+      await this.saveVault()
+      this.markVaultDirty(false)
+      await this.flushVault()
+    } finally {
+      this.setVault({ busy: false })
+    }
+  }
+
+  /**
+   * Restore on a fresh browser: a discoverable assertion (empty allow list) with both salts,
+   * `vault_id` from the credential id, `GET /v1/vault/{id}`, open with `vault_key`. Everything
+   * that can fail runs before anything local changes.
+   */
+  async restoreFromPasskey(): Promise<void> {
+    const crypto = this.factory?.vault
+    const factory = this.factory
+    if (!crypto || !factory || !this.store || this.engine) throw new PasskeyRestoreError('unavailable')
+    setPrfSalts({ unlock: crypto.saltUnlock(), backup: crypto.saltBackup() })
+    let a
+    try {
+      a = await assertPasskey()
+    } catch (e) {
+      if (e instanceof PasskeyError) {
+        if (e.code === 'cancelled') throw new PasskeyRestoreError('cancelled')
+        if (e.code === 'noCredential') throw new PasskeyRestoreError('noPasskey')
+      }
+      throw new PasskeyRestoreError('unavailable')
+    }
+    if (!a.second) throw new PasskeyRestoreError('cannotOpen')
+    let key: Uint8Array
+    try {
+      key = crypto.vaultKey(a.second)
+    } catch {
+      throw new PasskeyRestoreError('cannotOpen')
+    }
+    const id = crypto.vaultId(a.credentialId)
+    let blob: Uint8Array | null
+    try {
+      blob = await getVault(resolveNodeUrl(this.snap.settings.nodeUrl), id)
+    } catch {
+      throw new PasskeyRestoreError('network')
+    }
+    if (!blob) throw new PasskeyRestoreError('noBackup')
+    let restored: Engine
+    let plain
+    try {
+      plain = crypto.openVault(key, id, blob)
+      restored = factory.restore(plain.engine)
+    } catch {
+      throw new PasskeyRestoreError('cannotOpen')
+    }
+    // An identity appeared meanwhile (file import): leave it alone.
+    if (this.engine) throw new PasskeyRestoreError('cancelled')
+
+    // Nothing can fail from here on except storage: the browser takes the identity.
+    const settings = { ...this.snap.settings }
+    if (plain.handle) settings.handle = plain.handle
+    if (plain.nodeUrl && plain.nodeUrl !== location.origin) settings.nodeUrl = plain.nodeUrl
+    localSet('settings', JSON.stringify(settings))
+    this.set({ settings })
+    await this.store.putBytes('meta', 'engine', restored.exportState())
+    this.engine = restored
+    if (plain.photo) {
+      const hash = await checkAvatar(toB64(plain.photo))
+      if (hash) await this.putProfile({ id: 'me', avatar: toB64(plain.photo), hash, ts: Date.now() })
+    }
+    const rec: VaultRecord = {
+      credentialId: toB64(a.credentialId),
+      userHandle: toB64(randomBytes(16)),
+      key: toB64(key),
+      dirty: true,
+    }
+    this.vaultRec = rec
+    await this.saveVault()
+    this.restoredFlag = true
+    await this.afterIdentity()
+    this.toast(RESTORED_TOAST)
+    // The restored browser keeps the same vault up to date, and uploads once right away.
+    this.markVaultDirty(false)
+    void this.flushVault()
   }
 
   /** True when the core can seal a `.relaykey` (relay-core wasm, not the mock). */
