@@ -69,7 +69,7 @@ Spec section 5 stores a synced random `prfSeed` per passkey. This plan derives i
 - [ ] **Step 2: Run** `cargo test -p relay-node --test node aasa_served`, expect FAIL (SPA HTML).
 - [ ] **Step 3: Implement**, run, PASS. Commit `relay-node: apple-app-site-association for hushrelay.app`.
 - [ ] **Step 4: DNS.** Once the owner has bought `hushrelay.app`: apex A record to `40.64.127.19` (VM static IP). Verify: `dig +short hushrelay.app` returns the IP.
-- [ ] **Step 5: Deploy** (recipe in memory `soma-relay.md`): new image tag, `RELAY_HOSTS="somarelay.westus2.cloudapp.azure.com, hushrelay.app"` in `~/relay/.env`, `docker compose up -d`. Verify `curl -s https://hushrelay.app/.well-known/apple-app-site-association` prints the JSON and `curl -s https://hushrelay.app/healthz` is OK.
+- [ ] **Step 5: Deploy** (recipe in memory `soma-relay.md`): new image tag, `RELAY_HOSTS="hushrelay.westus2.cloudapp.azure.com, hushrelay.app"` in `~/relay/.env`, `docker compose up -d`. Verify `curl -s https://hushrelay.app/.well-known/apple-app-site-association` prints the JSON and `curl -s https://hushrelay.app/healthz` is OK.
 
 ### Task 3: `relay-core` vault crypto, exposed to Swift and the web
 

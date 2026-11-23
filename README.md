@@ -91,7 +91,7 @@ scripts/        Build scripts for the Swift framework and the wasm package
 
 ## Try it in a browser
 
-Soma Labs runs a public test node: https://somarelay.westus2.cloudapp.azure.com. It keeps undelivered messages on disk for up to 14 days and runs a TURN server for calls.
+Soma Labs runs a public test node: https://hushrelay.westus2.cloudapp.azure.com. It keeps undelivered messages on disk for up to 14 days and runs a TURN server for calls.
 
 Every node serves the web client at `/`. Open it twice with two profiles to chat with yourself:
 
