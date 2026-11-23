@@ -42,6 +42,18 @@ enum DS {
     static let warningText = Theme.dyn(0x7A4A00, 0xFFD696, lightAlpha: 1, darkAlpha: 0.92)
     static let danger = Theme.dyn(0xE5484D, 0xFF5F57)
 
+    /// Icon tiles of the settings rows: a white glyph on a muted colour (relay-screens 12).
+    enum Tile {
+        static let green = Color(UIColor(hex: 0x3E6B52, alpha: 1))
+        static let red = Color(UIColor(hex: 0x8A4B4B, alpha: 1))
+        static let indigo = Color(UIColor(hex: 0x4A5A8E, alpha: 1))
+        static let purple = Color(UIColor(hex: 0x6A5A8A, alpha: 1))
+        static let amber = Color(UIColor(hex: 0x8A6E3E, alpha: 1))
+        static let teal = Color(UIColor(hex: 0x3F6F7E, alpha: 1))
+        static let grey = Color(UIColor(hex: 0x55594F, alpha: 1))
+        static let danger = Theme.dyn(0xE5484D, 0xFF5F57, lightAlpha: 0.14, darkAlpha: 0.16)
+    }
+
     // MARK: Type scale (SF Pro, iOS sizes; SF Mono only for fingerprints)
 
     enum TextStyle {

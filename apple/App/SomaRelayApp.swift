@@ -112,7 +112,7 @@ struct MainTabs: View {
             case "contacts", "qr", "qr-verify", "add", "contact": tab = .contacts
             case "nearby", "channels": tab = .nearby
             case "list-search": tab = .search
-            case "settings": showSettings = true
+            case "settings", "settings-end", "settings-profile", "settings-node", "settings-export": showSettings = true
             case "call": model.calls.showDemo(peer: DemoData.ines)
             default: break
             }

@@ -250,3 +250,50 @@ struct DSWarningNote: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+// MARK: Settings rows
+
+/// Leading part of a settings row (relay-screens 12): a 30 pt colour tile with a white glyph, the
+/// title, an optional one-line subtitle. Rows using it inset their separator to 60 pt.
+struct DSTileLabel: View {
+    let systemName: String
+    let title: String
+    var subtitle: String?
+    var tile: Color = DS.Tile.grey
+    var glyph: Color = .white
+    var titleColor: Color = DS.label
+
+    var body: some View {
+        HStack(spacing: 14) {
+            DSIconTile(systemName: systemName, size: 30, fill: tile, foreground: glyph)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(DS.TextStyle.body)
+                    .foregroundStyle(titleColor)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(DS.TextStyle.footnote)
+                        .foregroundStyle(DS.label2)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+    }
+}
+
+/// Trailing state of a settings row ("5 téléphones", "Connecté"), a lime dot before it when active.
+struct DSRowValue: View {
+    let text: String
+    var dot: Bool?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let dot { DSStatusDot(active: dot) }
+            Text(text)
+                .font(DS.TextStyle.body)
+                .foregroundStyle(DS.label2)
+                .lineLimit(1)
+        }
+    }
+}
