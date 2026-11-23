@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Réglages (relay-screens 12), a sheet from the avatar: the profile card on top, then grouped
-/// sections (Sécurité, Confidentialité, Notifications, Réseau, Sauvegarde, Avancé) and the
+/// sections (Sécurité, Confidentialité, Notifications, Réseau, Sauvegarde, Avancé, Retours) and the
 /// emergency wipe alone at the bottom. Name, photo, pseudo and the personal words live on the
 /// profile page; the node address on its own page.
 struct SettingsView: View {
@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var exportURL: URL?
     @State private var showExport = false
     @State private var lockChanging = false
+    @State private var showSuggest = false
     @State private var path: [Page] = []
 
     enum Page: Hashable { case profile, node }
@@ -29,6 +30,7 @@ struct SettingsView: View {
                     network(model: model)
                     backup
                     advanced
+                    feedback
                     danger
                     Text(model.usesRealCore ? "Soma Relay · ML-KEM-1024 + X25519 · code ouvert AGPL" : "Soma Relay · code ouvert AGPL")
                         .font(DS.TextStyle.footnote)
@@ -47,6 +49,7 @@ struct SettingsView: View {
                 case "settings-profile": path = [.profile]
                 case "settings-node": path = [.node]
                 case "settings-export": showExport = true
+                case "settings-suggest": showSuggest = true
                 default: break
                 }
             }
@@ -68,6 +71,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showExport) {
                 ExportPassphraseSheet { url in exportURL = url }
+            }
+            .sheet(isPresented: $showSuggest) {
+                FeatureRequestSheet(demo: DemoData.screen == "settings-suggest")
             }
             .confirmationDialog("Tout effacer maintenant ?", isPresented: $confirmWipe, titleVisibility: .visible) {
                 Button("Effacer clés, messages et médias", role: .destructive) {
@@ -289,6 +295,29 @@ struct SettingsView: View {
             if AppConfig.demoAllowed, !model.usesRealCore {
                 Text("Version de test : chiffrement classique uniquement, pas encore post-quantique.")
             }
+        }
+    }
+
+    private var feedback: some View {
+        DSSection(header: "Retours") {
+            DSRow(first: true, separatorInset: Self.inset) {
+                Button {
+                    showSuggest = true
+                } label: {
+                    HStack(spacing: 0) {
+                        DSTileLabel(systemName: "lightbulb.fill", title: "Suggérer une fonctionnalité", tile: DS.Tile.amber)
+                        Spacer(minLength: 8)
+                        DSChevron()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Suggérer une fonctionnalité")
+                .accessibilityHint("Envoie une idée à Soma Labs, en dehors de la messagerie chiffrée")
+                .accessibilityIdentifier("settings.suggest")
+            }
+        } footer: {
+            Text("Ton idée part à Soma Labs, en dehors de la messagerie chiffrée.")
         }
     }
 
