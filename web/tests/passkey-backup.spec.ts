@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test'
 
 // Passkey backup and restore (spec 2026-11-22-passkey-unlock-backup, sections 3 and 6).
@@ -111,25 +111,112 @@ test('a passkey manager without PRF says it cannot back up', async ({ browser })
   await expect(page.getByText('Ton gestionnaire ne prend pas en charge la sauvegarde')).toBeVisible({ timeout: 30_000 })
 })
 
+/** A real PRF passkey made straight through WebAuthn (no Relay backup behind it). */
+async function makePasskey(page: Page): Promise<number[]> {
+  return page.evaluate(async () => {
+    const c = (await navigator.credentials.create({
+      publicKey: {
+        rp: { id: 'localhost', name: 'Soma Relay' },
+        user: { id: new Uint8Array(16).fill(7), name: 'Zoé', displayName: 'Zoé' },
+        challenge: new Uint8Array(32),
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+        authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+        extensions: { prf: {} } as never,
+      },
+    })) as PublicKeyCredential
+    return Array.from(new Uint8Array(c.rawId))
+  })
+}
+
 test('restore with no backup for the passkey says so', async ({ browser }) => {
   const tag = Date.now().toString(36)
-  const { page, auth } = await open(browser, `pk-e-${tag}`, true)
-  // A passkey that never backed anything up on this node.
-  await auth!.cdp.send('WebAuthn.addCredential', {
-    authenticatorId: auth!.authenticatorId,
-    credential: {
-      credentialId: Buffer.from(`orphan-${tag}`).toString('base64'),
-      isResidentCredential: true,
-      rpId: 'localhost',
-      privateKey: generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
-      userHandle: Buffer.from('orphan-user').toString('base64'),
-      signCount: 0,
-    },
-  } as never)
+  const { page } = await open(browser, `pk-e-${tag}`, true)
+  await makePasskey(page)
   await page.getByRole('button', { name: 'Restaurer avec un passkey' }).click()
-  await expect(page.getByText(/Aucune sauvegarde pour ce passkey|Ce passkey ne peut pas ouvrir la sauvegarde/)).toBeVisible({
-    timeout: 30_000,
+  await expect(page.getByText('Aucune sauvegarde pour ce passkey', { exact: true })).toBeVisible({ timeout: 30_000 })
+})
+
+test('a vault opened and sealed again by the web keeps channelsPrefs and the photo byte for byte', async ({ browser }) => {
+  const tag = Date.now().toString(36)
+  const { page } = await open(browser, `pk-r-${tag}`, true)
+  const wasm = await import('../src/core/pkg/relay_wasm.js')
+  wasm.initSync({ module: readFileSync(new URL('../src/core/pkg/relay_wasm_bg.wasm', import.meta.url)) })
+
+  // The vault of another device (iOS): its engine, a channel list and a photo.
+  const engine = wasm.RelayEngine.create('Zoé')
+  const credentialId = Uint8Array.from(await makePasskey(page))
+  const salt = Array.from(wasm.prfSaltBackup())
+  const second = await page.evaluate(async ([id, salt]) => {
+    const r = (await navigator.credentials.get({
+      publicKey: {
+        rpId: 'localhost',
+        challenge: new Uint8Array(32),
+        userVerification: 'required',
+        allowCredentials: [{ type: 'public-key', id: new Uint8Array(id) }],
+        extensions: { prf: { eval: { first: new Uint8Array(salt), second: new Uint8Array(salt) } } } as never,
+      },
+    })) as PublicKeyCredential
+    const out = (r.getClientExtensionResults() as { prf?: { results?: { second?: ArrayBuffer } } }).prf?.results?.second
+    return Array.from(new Uint8Array(out!))
+  }, [Array.from(credentialId), salt] as const)
+  const key = wasm.vaultKey(Uint8Array.from(second))
+  const id = wasm.vaultId(credentialId)
+  const channelsPrefs = new TextEncoder().encode('["alpha","beta","gamma"]')
+  // Not a decodable JPEG: the web cannot show it, and must still carry it.
+  const photo = Uint8Array.from({ length: 300 }, (_, i) => (i * 7) % 256)
+  const blob = wasm.sealVault(key, id, { engine: engine.exportState(), handle: null, nodeUrl: null, channelsPrefs, photo })
+
+  // Put it on the node as that device: authenticate the mailbox over the WebSocket, then PUT.
+  const ws = new WebSocket(`${BASE!.replace('http', 'ws')}/v1/ws`)
+  await new Promise<void>((resolve, reject) => {
+    ws.onerror = () => reject(new Error('ws'))
+    ws.onopen = () =>
+      ws.send(JSON.stringify({ t: 'hello', mailbox: engine.mailboxHex(), pub: Buffer.from(engine.deviceSigningPublic()).toString('base64url') }))
+    ws.onmessage = (ev) => {
+      const f = JSON.parse(String(ev.data)) as { t: string; nonce?: string }
+      if (f.t === 'challenge')
+        ws.send(JSON.stringify({ t: 'auth', sig: Buffer.from(engine.signNodeChallenge(Buffer.from(f.nonce!, 'base64url'))).toString('base64url') }))
+      if (f.t === 'ready') resolve()
+    }
   })
+  const put = await fetch(`${BASE}/v1/vault/${id}`, {
+    method: 'PUT',
+    headers: {
+      'x-relay-mailbox': engine.mailboxHex(),
+      'x-relay-sig': Buffer.from(engine.signVault(id, blob)).toString('base64'),
+    },
+    body: blob,
+  })
+  expect(put.status).toBe(200)
+
+  // The web restores it and seals it again at once.
+  // (Playwright cannot read a Blob request body: the node's copy is read back with a GET.)
+  const stored = async () => new Uint8Array(await (await fetch(`${BASE}/v1/vault/${id}`)).arrayBuffer())
+  const before = await stored()
+  const resealed = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().includes(`/v1/vault/${id}`) && r.ok(), { timeout: 30_000 })
+  await page.getByRole('button', { name: 'Restaurer avec un passkey' }).click()
+  await resealed
+  const body = await stored()
+  expect(Buffer.from(body).equals(Buffer.from(before))).toBe(false)
+  const plain = wasm.openVault(key, id, body) as { channelsPrefs: Uint8Array; photo: Uint8Array | null; engine: Uint8Array }
+  expect(Buffer.from(plain.channelsPrefs).equals(Buffer.from(channelsPrefs))).toBe(true)
+  expect(plain.photo && Buffer.from(plain.photo).equals(Buffer.from(photo))).toBe(true)
+
+  // A later reseal (a rename) still carries both.
+  await expect(page.getByRole('tab', { name: 'Réglages' })).toBeVisible({ timeout: 30_000 })
+  await page.getByRole('tab', { name: 'Réglages' }).click()
+  const again = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().includes(`/v1/vault/${id}`) && r.ok(), { timeout: 15_000 })
+  await page.fill('#set-name', 'Zoé B')
+  await page.getByRole('button', { name: 'OK', exact: true }).first().click()
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await again
+  const second2 = wasm.openVault(key, id, await stored()) as { channelsPrefs: Uint8Array; photo: Uint8Array | null }
+  expect(Buffer.from(second2.channelsPrefs).equals(Buffer.from(channelsPrefs))).toBe(true)
+  expect(second2.photo && Buffer.from(second2.photo).equals(Buffer.from(photo))).toBe(true)
+  ws.close()
 })
 
 test('a save after the backup marks it dirty and going to the background uploads it', async ({ browser }) => {

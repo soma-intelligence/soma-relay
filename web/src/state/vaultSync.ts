@@ -15,6 +15,13 @@ export interface VaultRecord {
   /** An upload is owed. */
   dirty: boolean
   savedAt?: number
+  /**
+   * Base64, kept from the vault this browser restored and sealed again unchanged: the web has no
+   * channel preferences of its own, an iOS list must survive an iOS to web to iOS round trip.
+   */
+  channelsPrefs?: string
+  /** Base64 photo of the restored vault, kept while the web has no photo of its own. */
+  photo?: string
 }
 
 export type VaultState = 'off' | 'lockOnly' | 'saved' | 'pending' | 'failed'

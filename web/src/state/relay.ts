@@ -1799,6 +1799,7 @@ export class Relay {
 
   /** Sets (bytes) or removes (null) my photo and tells everyone. */
   async setMyAvatar(jpeg: Uint8Array | null) {
+    if (this.vaultRec?.photo) delete this.vaultRec.photo
     const cur = this.snap.profiles.me
     if (jpeg) await this.putProfile({ ...cur, id: 'me', avatar: toB64(jpeg), hash: await avatarHash(jpeg), ts: Date.now() })
     else if (cur?.avatar) await this.putProfile({ id: 'me', ts: Date.now() })
@@ -2054,6 +2055,9 @@ export class Relay {
   private vaultInFlight = 0
   /** Bumped by every dirty mark: an upload only clears the flag for the state it carried. */
   private vaultGen = 0
+  private wiping = false
+  private vaultBackoff = 0
+  private vaultRetry: ReturnType<typeof setTimeout> | null = null
 
   private restoredFlag = false
 
@@ -2086,7 +2090,7 @@ export class Relay {
   /** The engine state, the handle, the node and my photo changed: upload 10 s after the last change. */
   markVaultDirty(debounced = true) {
     const rec = this.vaultRec
-    if (!rec?.key) return
+    if (!rec?.key || this.wiping) return
     rec.dirty = true
     this.vaultGen++
     void this.saveVault()
@@ -2094,6 +2098,16 @@ export class Relay {
     this.vaultTimer = null
     if (this.snap.vault.state === 'saved') this.setVault({ state: 'pending' })
     if (debounced) this.vaultTimer = setTimeout(() => void this.flushVault(), VAULT_DEBOUNCE_MS)
+  }
+
+  /** After `rate_limited`: 30 s, then 60 s, doubling, capped at 5 min. */
+  private scheduleVaultRetry() {
+    if (this.vaultRetry || this.wiping) return
+    this.vaultBackoff = Math.min(300_000, this.vaultBackoff ? this.vaultBackoff * 2 : 30_000)
+    this.vaultRetry = setTimeout(() => {
+      this.vaultRetry = null
+      void this.retryVaultIfOwed()
+    }, this.vaultBackoff)
   }
 
   private async retryVaultIfOwed() {
@@ -2107,6 +2121,7 @@ export class Relay {
    */
   async flushVault(): Promise<void> {
     for (;;) {
+      if (this.wiping) return
       if (this.vaultTimer) clearTimeout(this.vaultTimer)
       this.vaultTimer = null
       if (this.vaultUpload) {
@@ -2135,15 +2150,18 @@ export class Relay {
     const id = crypto.vaultId(fromB64(rec.credentialId))
     let blob: Uint8Array
     try {
-      const photo = this.snap.profiles.me?.avatar ? fromB64(this.snap.profiles.me.avatar) : null
+      // My own photo wins; the restored one stays until I set or remove mine.
+      const own = this.snap.profiles.me?.avatar
+      const kept = own ? fromB64(own) : rec.photo ? fromB64(rec.photo) : null
       const nodeUrl = this.snap.settings.nodeUrl.trim()
       blob = crypto.sealVault(fromB64(rec.key), id, {
         engine: e.exportState(),
         handle: this.snap.settings.handle || null,
         nodeUrl: nodeUrl || null,
-        // The web client has no channel preferences: the same JSON array the apps write.
-        channelsPrefs: utf8('[]'),
-        photo: photo && photo.length <= 64 * 1024 ? photo : null,
+        // The web has no channel preferences: a restored list is sealed again byte for byte,
+        // else the empty JSON array the apps write.
+        channelsPrefs: rec.channelsPrefs ? fromB64(rec.channelsPrefs) : utf8('[]'),
+        photo: kept && kept.length <= 64 * 1024 ? kept : null,
       })
     } catch (err) {
       const big = err instanceof Error && /TooLarge/.test(`${err.name} ${err.message}`)
@@ -2155,12 +2173,14 @@ export class Relay {
       const code = await this.node.putVault(id, blob, e.signVault(id, blob))
       if (this.vaultRec !== rec) return false
       if (code === '') {
+        this.vaultBackoff = 0
         rec.savedAt = Date.now()
         if (this.vaultGen === carried) rec.dirty = false
         await this.saveVault()
         this.set({ vault: { ...statusOf(rec), busy: false } })
         return true
       }
+      if (code === 'rate_limited') this.scheduleVaultRetry()
       if (RETRYABLE.has(code)) this.setVault({ state: 'pending', busy: false, message: undefined })
       else this.setVault({ state: 'failed', busy: false, message: refusedMessage(code) })
       return false
@@ -2269,6 +2289,8 @@ export class Relay {
       userHandle: toB64(randomBytes(16)),
       key: toB64(key),
       dirty: true,
+      channelsPrefs: toB64(plain.channelsPrefs),
+      photo: plain.photo ? toB64(plain.photo) : undefined,
     }
     this.vaultRec = rec
     await this.saveVault()
@@ -2306,6 +2328,10 @@ export class Relay {
   }
 
   async wipe() {
+    this.wiping = true
+    if (this.vaultTimer) clearTimeout(this.vaultTimer)
+    if (this.vaultRetry) clearTimeout(this.vaultRetry)
+    this.vaultTimer = this.vaultRetry = null
     this.node?.stop()
     this.bus?.close()
     this.p2p.closeAll()
