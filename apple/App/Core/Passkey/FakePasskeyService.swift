@@ -50,7 +50,7 @@ nonisolated struct FakePasskeyService: PasskeyProviding {
         }
     }
 
-    func assert(credentialID: Data?) async throws -> PasskeyAssertion {
+    func assert(credentialID: Data?, allowCrossDevice: Bool) async throws -> PasskeyAssertion {
         let count = Self.assertions.withLock { n in
             n += 1
             return n

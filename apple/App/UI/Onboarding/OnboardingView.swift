@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Name, identity creation (post-quantum keys), the passkey step (skippable), then the QR card.
-/// Or a `.relaykey` restore.
+/// Or a restore: from a passkey (the backup on the node), or from a `.relaykey` file.
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @State private var step = Step.welcome
@@ -11,6 +11,7 @@ struct OnboardingView: View {
     @State private var importText = ""
     @State private var passphrase = ""
     @State private var restoring = false
+    @State private var restoringPasskey = false
     @State private var restoreError: String?
     @FocusState private var passphraseFocused: Bool
     @State private var protecting = false
@@ -58,20 +59,32 @@ struct OnboardingView: View {
             }
             .padding(.top, 12)
             Spacer()
-            primary("Commencer") { step = .name }
-            if let restoreError, step == .welcome {
-                Text(restoreError)
-                    .font(.footnote)
-                    .foregroundStyle(Theme.danger)
-                    .multilineTextAlignment(.center)
+            primary("Commencer", disabled: restoring) { step = .name }
+            Button {
+                restoreWithPasskey()
+            } label: {
+                Text(restoringPasskey ? "Restauration…" : "Restaurer avec un passkey")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: 44)
             }
-            Button("Restaurer une identité") {
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .disabled(restoring)
+            .accessibilityLabel("Restaurer avec un passkey")
+            Button("Restaurer depuis un fichier") {
                 restoreError = nil
                 showImporter = true
             }
             .font(.subheadline.weight(.medium))
             .frame(minHeight: 44)
             .disabled(restoring)
+            if let restoreError, step == .welcome {
+                Text(restoreError)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.danger)
+                    .multilineTextAlignment(.center)
+            }
             Text("Code ouvert sous licence AGPL.")
                 .font(.footnote)
                 .foregroundStyle(Theme.secondary)
@@ -257,6 +270,29 @@ struct OnboardingView: View {
                 model.finishOnboarding()
             } catch {
                 Haptics.warning()
+                restoreError = error.message
+            }
+        }
+    }
+
+    /// New phone: the passkey (here or on another device) opens the backup on the node.
+    private func restoreWithPasskey() {
+        guard !restoring else { return }
+        restoring = true
+        restoringPasskey = true
+        restoreError = nil
+        Task {
+            defer {
+                restoring = false
+                restoringPasskey = false
+            }
+            do throws(PasskeyRestoreError) {
+                try await model.restoreFromPasskey()
+                Haptics.success()
+                model.banner = AppModel.restoredBanner
+                model.finishOnboarding()
+            } catch {
+                if error != .cancelled { Haptics.warning() }
                 restoreError = error.message
             }
         }

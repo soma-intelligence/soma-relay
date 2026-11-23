@@ -835,6 +835,19 @@ final class AppModel {
         didLoadCore()
     }
 
+    /// Restore from a passkey vault (`restoreFromPasskey`): the engine plus the settings the vault
+    /// carried, applied before the engine starts. Only before an identity exists.
+    func installRestored(_ engine: RelayCoreAPI, handle: String?, nodeURL: String?, channels: [String]?, photo: Data?) {
+        guard core == nil else { return }
+        if let nodeURL, URL(string: nodeURL) != nil { self.nodeURL = nodeURL }
+        self.handle = handle ?? ""
+        if let channels { UserDefaults.standard.set(channels, forKey: "channels") }
+        if let photo { storePhoto(photo, owner: Self.me) }
+        core = engine
+        saveNow()
+        didLoadCore()
+    }
+
     /// Emergency wipe: keys, database, media, then back to onboarding.
     func wipe() {
         node.disconnect()

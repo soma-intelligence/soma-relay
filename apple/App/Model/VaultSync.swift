@@ -161,6 +161,24 @@ final class VaultSync {
         if !on { model.banner = "Verrouillage non activé : le déverrouillage a échoué." }
     }
 
+    /// Restore on a new phone: the vault this key opened becomes this phone's backup, so later
+    /// saves keep going to the same vault id. Uploads the restored state once right away.
+    func adoptRestored(key: Data) {
+        let written = Self.storeKey(key)
+        guard written == errSecSuccess else {
+            hasKey = false
+            dirty = false
+            status = .failed(Self.message(setup: SetupError.keychain(written)))
+            return
+        }
+        hasKey = true
+        defaults.removeObject(forKey: Self.lockOnlyKey)
+        defaults.removeObject(forKey: Self.savedAtKey)
+        markDirty(debounced: false)
+        status = .pending
+        Task { await flush() }
+    }
+
     /// 16 random bytes, made once and kept until a wipe.
     private func userHandle() -> Data {
         if let existing = defaults.data(forKey: Self.userHandleKey), existing.count == 16 { return existing }

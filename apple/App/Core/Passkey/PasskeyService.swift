@@ -40,7 +40,16 @@ nonisolated enum PasskeyFailure: Error, Sendable, Equatable {
 
 protocol PasskeyProviding: Sendable {
     func register(userName: String, userHandle: Data) async throws -> PasskeyRegistration
-    func assert(credentialID: Data?) async throws -> PasskeyAssertion
+    /// `allowCrossDevice`: also offer passkeys from another device (QR code, nearby phone).
+    /// Restore on a new phone needs it; unlock and setup keep to this device's passkeys.
+    func assert(credentialID: Data?, allowCrossDevice: Bool) async throws -> PasskeyAssertion
+}
+
+extension PasskeyProviding {
+    /// This device's passkeys only (unlock, setup).
+    func assert(credentialID: Data?) async throws -> PasskeyAssertion {
+        try await assert(credentialID: credentialID, allowCrossDevice: false)
+    }
 }
 
 /// The service the app uses: the fake when launched with `-uitest-passkey ok|noprf|fail|nocred`,
@@ -72,13 +81,14 @@ final class PlatformPasskeyService: PasskeyProviding {
         return PasskeyRegistration(credentialID: registration.credentialID, prfSupported: registration.prf?.isSupported ?? false)
     }
 
-    func assert(credentialID: Data?) async throws -> PasskeyAssertion {
+    func assert(credentialID: Data?, allowCrossDevice: Bool) async throws -> PasskeyAssertion {
         let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: Relay.passkeyRelyingParty)
         let request = provider.createCredentialAssertionRequest(challenge: Self.challenge())
         request.userVerificationPreference = .required
         request.allowedCredentials = credentialID.map { [ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)] } ?? []
         request.prf = .inputValues(.init(saltInput1: Relay.prfSaltUnlock, saltInput2: Relay.prfSaltBackup))
-        let credential = try await run(request, preferImmediate: true)
+        // `preferImmediatelyAvailableCredentials` hides the cross-device route (QR, other phone).
+        let credential = try await run(request, preferImmediate: !allowCrossDevice)
         guard let assertion = credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
             throw PasskeyFailure.notAvailable
         }

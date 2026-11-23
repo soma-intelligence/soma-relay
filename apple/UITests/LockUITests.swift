@@ -206,7 +206,7 @@ final class LockUITests: XCTestCase {
         let confirm = app.buttons["Effacer clés, messages et médias"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
-        XCTAssertTrue(app.buttons["Restaurer une identité"].waitForExistence(timeout: 10), "back to onboarding")
+        XCTAssertTrue(app.buttons["Restaurer avec un passkey"].waitForExistence(timeout: 10), "back to onboarding")
         XCTAssertFalse(lockScreen.exists)
 
         // Relaunch: lockEnabled is gone (no lock screen).
