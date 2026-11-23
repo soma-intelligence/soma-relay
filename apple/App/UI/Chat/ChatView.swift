@@ -2,9 +2,11 @@ import MessageUI
 import QuickLook
 import SwiftUI
 
-/// Direction E chat: glass header, collapsible path card with the mini radar, grouped
-/// transport-coloured bubbles with mono metadata, day and unread separators, dashed bubbles for
-/// messages still on their way, reactions, search, and the glass composer.
+/// Chat of the redesign (relay-screens 02 and 03): glass identity capsule whose subtitle is the
+/// route (tap for the route detail), one bubble colour per side whatever the transport, plain
+/// metadata under the last bubble of a run, the encryption stated once at the top, day and
+/// unread separators, outlined bubbles for messages still on their way, reactions, search, and
+/// the glass composer.
 struct ChatView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -15,7 +17,7 @@ struct ChatView: View {
     @State private var items: [ChatItem] = []
     @State private var replyTo: ChatItem?
     @State private var editing: ChatItem?
-    @State private var pathExpanded = false
+    @State private var showRoute = false
     @State private var smsLink: SMSPayload?
     @State private var viewer: ChatItem?
     @State private var showDetails = false
@@ -59,11 +61,11 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if !items.isEmpty {
-                        Text(Self.header(kind: conversation?.kind ?? .direct))
-                            .font(Theme.mono(10))
-                            .foregroundStyle(Theme.secondary)
-                            .padding(.bottom, 4)
-                            .accessibilityLabel(conversation?.kind == .channel ? "Canal non chiffré" : "Chiffrement post-quantique ML-KEM-1024 et X25519")
+                        Label(Self.header(kind: conversation?.kind ?? .direct), systemImage: conversation?.kind == .channel ? "exclamationmark.triangle.fill" : "lock.fill")
+                            .labelStyle(EncryptionLabelStyle(warning: conversation?.kind == .channel))
+                            .padding(.top, 8)
+                            .padding(.bottom, 6)
+                            .accessibilityLabel(conversation?.kind == .channel ? "Canal non chiffré" : "Chiffré de bout en bout, post-quantique, ML-KEM-1024 et X25519")
                     }
                     ForEach(rows) { row in
                         rowView(row)
@@ -77,7 +79,7 @@ struct ChatView: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.35, bounce: 0.2), value: items.map(\.id))
                 .animation(.smooth, value: model.isTyping(conversationId))
@@ -133,17 +135,14 @@ struct ChatView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 10) {
                 if searching { searchBar } else { header }
-                if conversation?.kind != .channel, !searching {
-                    PathCard(conversation: conversation, peer: peer, expanded: $pathExpanded)
-                }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 16)
             .padding(.top, 4)
             .padding(.bottom, 6)
             .background {
                 // Messages fade out under the header instead of showing through the glass.
                 LinearGradient(
-                    stops: [.init(color: Theme.background, location: 0), .init(color: Theme.background, location: 0.9), .init(color: Theme.background.opacity(0), location: 1)],
+                    stops: [.init(color: DS.background, location: 0), .init(color: DS.background, location: 0.78), .init(color: DS.background.opacity(0), location: 1)],
                     startPoint: .top, endPoint: .bottom)
                     .padding(.bottom, -14)
                     .ignoresSafeArea(edges: .top)
@@ -165,7 +164,7 @@ struct ChatView: View {
             .padding(.bottom, 8)
             .animation(.snappy(duration: 0.25), value: atBottom)
         }
-        .background(Theme.background.ignoresSafeArea())
+        .background(DS.background.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .onAppear(perform: appear)
@@ -199,6 +198,16 @@ struct ChatView: View {
                     item: item, name: item.isMine ? "Toi" : (item.senderName ?? model.name(of: item.sender)),
                     onStop: item.isMine && model.liveShares[item.id] != nil ? { model.stopLive(item.id) } : nil)
             }
+        }
+        .sheet(isPresented: $showRoute) {
+            RouteDetailSheet(conversation: conversation, peer: peer) {
+                showRoute = false
+                Task {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    showDetails = true
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showDetails) {
             if let peer {
@@ -261,7 +270,7 @@ struct ChatView: View {
         for (i, item) in items.enumerated() {
             let day = cal.startOfDay(for: Date(timeIntervalSince1970: Double(item.message.ts) / 1000))
             if day != lastDay {
-                out.append(.day(DaySeparator.label(for: item.message.ts), item.message.ts))
+                out.append(.day(DaySeparator.label(withTime: item.message.ts), item.message.ts))
                 lastDay = day
             }
             if item.id == unreadAnchor { out.append(.unread(unreadCount)) }
@@ -293,13 +302,13 @@ struct ChatView: View {
             Group {
                 if conversation?.kind == .group, !item.isMine {
                     // The sender's face next to the last bubble of each run.
-                    HStack(alignment: .bottom, spacing: 6) {
+                    HStack(alignment: .bottom, spacing: 8) {
                         if position.last {
-                            Avatar(name: model.name(of: item.sender), size: 28, tint: Theme.senderColor(item.sender).opacity(0.25), photo: model.photo(for: item.sender))
-                                .padding(.bottom, 16)
+                            DSAvatar(name: model.name(of: item.sender), size: 30, photo: model.photo(for: item.sender))
+                                .padding(.bottom, item.state.reactionSummary.isEmpty ? 24 : 34)
                                 .transition(.opacity)
                         } else {
-                            Color.clear.frame(width: 28, height: 1)
+                            Color.clear.frame(width: 30, height: 1)
                         }
                         row
                     }
@@ -376,7 +385,7 @@ struct ChatView: View {
         } label: {
             Image(systemName: "chevron.down")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Theme.text)
+                .foregroundStyle(DS.label)
                 .frame(width: 42, height: 42)
                 .glassEffect(.regular.interactive(), in: Circle())
                 .overlay(alignment: .topTrailing) {
@@ -384,10 +393,10 @@ struct ChatView: View {
                         Text("\(newBelow)")
                             .font(.caption2.weight(.bold))
                             .monospacedDigit()
-                            .foregroundStyle(Theme.onMesh)
+                            .foregroundStyle(DS.onAccent)
                             .padding(.horizontal, 5)
                             .frame(minWidth: 18, minHeight: 18)
-                            .background(Theme.mesh, in: Capsule())
+                            .background(DS.accentFill, in: Capsule())
                             .offset(x: 4, y: -4)
                             .contentTransition(.numericText())
                     }
@@ -445,6 +454,8 @@ struct ChatView: View {
                 runSearch(keepIndex: false)
             case "group-detail":
                 showGroup = true
+            case "route":
+                showRoute = true
             case "reactions":
                 if let target = items.last(where: { $0.message.kind == .text && !$0.isMine }) { emojiItem = target }
             default:
@@ -455,74 +466,111 @@ struct ChatView: View {
 
     // MARK: Header
 
+    /// Back button, the identity capsule (avatar, name, seal, route), and the call buttons or
+    /// the options menu, each in its own Liquid Glass shape.
     private var header: some View {
         HStack(spacing: 8) {
             Button {
                 dismiss()
             } label: {
-                Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
-                    .roundIcon()
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(DS.label)
+                    .frame(width: DS.roundButton, height: DS.roundButton)
+                    .glassEffect(.regular.interactive(), in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Retour")
-            Button {
-                if peer != nil { showDetails = true } else if groupId != nil { showGroup = true }
-            } label: {
-                HStack(spacing: 8) {
-                if let conversation, conversation.kind != .channel {
-                    Avatar(
-                        name: conversation.title, size: 34, icon: conversation.kind == .group ? "person.3.fill" : nil,
+            Spacer(minLength: 0)
+            identityCapsule
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+            trailingControls
+        }
+    }
+
+    private var identityCapsule: some View {
+        Button {
+            Haptics.select()
+            if peer != nil { showRoute = true } else if groupId != nil { showGroup = true }
+        } label: {
+            HStack(spacing: 9) {
+                if let conversation {
+                    DSAvatar(
+                        name: conversation.title, size: 38,
+                        icon: conversation.kind == .group ? "person.3.fill" : conversation.kind == .channel ? "number" : nil,
                         photo: model.photo(of: conversation))
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text(conversation?.title ?? "")
                             .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(Theme.text)
+                            .foregroundStyle(DS.label)
                             .lineLimit(1)
+                        if peer?.verified == true {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(DS.accent)
+                                .accessibilityLabel("vérifiée")
+                        }
                         if conversation?.isMuted() == true {
-                            Image(systemName: "bell.slash.fill").font(.caption2).foregroundStyle(Theme.secondary)
+                            Image(systemName: "bell.slash.fill").font(.system(size: 11)).foregroundStyle(DS.label3)
                                 .accessibilityLabel("en sourdine")
                         }
                     }
-                    Text(subtitle)
-                        .font(Theme.mono(10))
-                        .foregroundStyle(Theme.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        if let icon = subtitle.icon {
+                            Image(systemName: icon)
+                                .font(.system(size: 10))
+                                .foregroundStyle(subtitle.tint)
+                        }
+                        Text(subtitle.text)
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(DS.label2)
                 }
-                Spacer(minLength: 0)
+            }
+            .padding(.leading, 5)
+            .padding(.trailing, 16)
+            .frame(height: 48)
+            .glassEffect(.regular.interactive(), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(peer != nil ? "Affiche le chemin des messages" : groupId != nil ? "Ouvre les infos du groupe" : "")
+    }
+
+    @ViewBuilder private var trailingControls: some View {
+        if let peer {
+            HStack(spacing: 0) {
+                Button {
+                    model.calls.start(with: peer.fingerprint, video: true)
+                } label: {
+                    Image(systemName: "video.fill").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
                 }
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(peer != nil ? "Ouvre la fiche du contact" : groupId != nil ? "Ouvre les infos du groupe" : "")
-            Button {
-                withAnimation(.snappy) { searching = true }
-                searchFocused = true
-            } label: {
-                Image(systemName: "magnifyingglass").font(.system(size: 16, weight: .semibold)).roundIcon()
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Rechercher dans la conversation")
-            if let peer {
+                .accessibilityLabel("Appel vidéo")
                 Button {
                     model.calls.start(with: peer.fingerprint, video: false)
                 } label: {
-                    Image(systemName: "phone.fill").font(.system(size: 17))
-                        .roundIcon(fill: Theme.strong, foreground: Theme.onStrong)
-                }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button("Appel audio", systemImage: "phone") { model.calls.start(with: peer.fingerprint, video: false) }
-                    Button("Appel vidéo", systemImage: "video") { model.calls.start(with: peer.fingerprint, video: true) }
+                    Image(systemName: "phone.fill").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Appeler")
-                .accessibilityAction(named: "Appel vidéo") { model.calls.start(with: peer.fingerprint, video: true) }
+                conversationMenu
+                    .frame(width: 40, height: 44)
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(DS.label)
+            .padding(.horizontal, 4)
+            .glassEffect(.regular.interactive(), in: Capsule())
+        } else {
             conversationMenu
+                .frame(width: DS.roundButton, height: DS.roundButton)
+                .glassEffect(.regular.interactive(), in: Circle())
         }
-        .glassBar()
     }
 
     private var conversationMenu: some View {
@@ -555,20 +603,25 @@ struct ChatView: View {
                 if let c = conversation, let label = AppModel.muteLabel(c) { Text(label) }
             }
             if peer != nil {
+                Button("Chemin des messages", systemImage: "point.3.connected.trianglepath.dotted") { showRoute = true }
                 Button("Fiche du contact", systemImage: "person.crop.circle") { showDetails = true }
             }
             if groupId != nil {
                 Button("Infos du groupe", systemImage: "person.3") { showGroup = true }
             }
         } label: {
-            Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold)).roundIcon()
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(DS.label)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("Options de la conversation")
     }
 
     private var searchBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(Theme.secondary).padding(.leading, 10)
+            Image(systemName: "magnifyingglass").foregroundStyle(DS.label2).padding(.leading, 10)
             TextField("Rechercher dans la conversation", text: $query)
                 .focused($searchFocused)
                 .submitLabel(.search)
@@ -579,8 +632,8 @@ struct ChatView: View {
                 Text(hits.isEmpty ? "aucun" : "\(hitIndex + 1) sur \(hits.count)")
                     .contentTransition(.numericText())
                     .animation(.snappy, value: hitIndex)
-                    .font(Theme.mono(12))
-                    .foregroundStyle(Theme.secondary)
+                    .font(DS.TextStyle.footnote)
+                    .foregroundStyle(DS.label2)
                     .monospacedDigit()
                     .fixedSize()
             }
@@ -598,7 +651,8 @@ struct ChatView: View {
             .font(.body.weight(.semibold))
             .padding(.trailing, 8)
         }
-        .glassBar()
+        .padding(4)
+        .glassEffect(.regular, in: Capsule())
     }
 
     private func runSearch(keepIndex: Bool) {
@@ -615,28 +669,46 @@ struct ChatView: View {
         scrollRequest = ScrollRequest(id: hits[hitIndex], anchor: .center, flash: true)
     }
 
-    private var subtitle: String {
-        var text: String
+    /// The route in plain words under the name ("Mesh, 2 relais", "Par le nœud"), or the group
+    /// size and link, or the channel warning.
+    private var subtitle: (icon: String?, tint: Color, text: String) {
+        var out: (icon: String?, tint: Color, text: String)
         switch conversation?.kind {
         case .direct:
-            guard let peer else { return "" }
-            text = "fp \(peer.fingerprint.groupedFingerprint(groups: 2)) · \(peer.verified ? "vérifiée" : "non vérifiée")"
+            out = Self.routeSubtitle(route: peer.flatMap { model.routes[$0.fingerprint] }, meshPeers: model.meshPeerCount, nodeReady: model.nodeState == .ready)
         case .group:
             let n = model.groups.first { $0.id == conversation?.peer }?.members.count ?? 0
-            text = "\(n) membres · groupe chiffré"
+            let link = model.meshPeerCount > 0 ? "mesh" : model.nodeState == .ready ? "par le nœud" : "hors ligne"
+            out = (nil, DS.label3, "\(n) membres · \(link)")
         case .channel:
-            text = "canal local · non chiffré"
+            out = ("exclamationmark.triangle.fill", DS.sms, "Canal local, non chiffré")
         case nil:
-            text = ""
+            out = (nil, DS.label3, "")
         }
-        if let s = conversation?.expireS, s > 0 { text += " · éphémère " + AppModel.timerLabel(s) }
-        return text
+        if let s = conversation?.expireS, s > 0 { out.text += " · éphémère " + AppModel.timerLabel(s) }
+        return out
+    }
+
+    /// Shared with the route sheet: hops count the contact, so relays are hops minus one.
+    static func routeSubtitle(route: PathInfo?, meshPeers: Int, nodeReady: Bool) -> (icon: String?, tint: Color, text: String) {
+        let mesh = "point.3.connected.trianglepath.dotted"
+        switch route?.transport {
+        case .mesh:
+            let relays = max(0, (route?.hops ?? 1) - 1)
+            return (mesh, DS.label3, relays == 0 ? "Mesh, en direct" : "Mesh, \(relays) relais")
+        case .node: return ("globe", DS.node, "Par le nœud")
+        case .sms: return ("message.fill", DS.sms, "SMS")
+        default:
+            if meshPeers > 0 { return (mesh, DS.label3, "Mesh actif") }
+            if nodeReady { return ("globe", DS.node, "Par le nœud") }
+            return ("hourglass", DS.label3, "Hors ligne, les messages attendent")
+        }
     }
 
     static func header(kind: ConversationKind) -> String {
         switch kind {
-        case .channel: "ED25519 · NON CHIFFRÉ"
-        default: "CHIFFRÉ DE BOUT EN BOUT · ML-KEM-1024 + X25519"
+        case .channel: "Canal local, non chiffré"
+        default: "Chiffré de bout en bout, post-quantique"
         }
     }
 
@@ -652,6 +724,20 @@ struct ChatView: View {
             UIPasteboard.general.string = text
             model.banner = "Pas de SMS sur cet appareil. Lien chiffré copié."
         }
+    }
+}
+
+/// "🔒 Chiffré de bout en bout, post-quantique", once at the top of the thread.
+private struct EncryptionLabelStyle: LabelStyle {
+    var warning = false
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 5) {
+            configuration.icon.font(.system(size: 11)).foregroundStyle(warning ? DS.sms : DS.label3)
+            configuration.title
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(DS.label3)
+        .frame(maxWidth: .infinity)
     }
 }
 

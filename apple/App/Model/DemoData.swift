@@ -6,7 +6,7 @@ import UIKit
 /// a voice note, a message still on its way), in an in-memory database. `-RelayDemoScreen`
 /// opens a screen directly: conversations, chat, qr, call, contacts, settings, onboarding;
 /// v1.1: group (poll, live location, reactions, reply), files (PDF, link preview, edit),
-/// attach, poll-new, location, document, map, search, list-search, reactions, edit.
+/// attach, poll-new, location, document, map, search, list-search, reactions, edit; v1.2: route.
 enum DemoData {
     static let ines = "4f2a91c077de3b5e8a10c2d4f6a8b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f607"
     static let malik = "9b31e0c5aa7d4e21f0b6c3d8e9a1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f901"

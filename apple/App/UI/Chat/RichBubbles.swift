@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 import UIKit
 
@@ -8,49 +9,57 @@ private struct CardBubble: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Theme.incoming))
+            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(DS.bubbleIn))
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay {
                 if inFlight {
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .strokeBorder(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                        .strokeBorder(DS.accentFill.opacity(0.28), lineWidth: 1)
                 }
             }
-            .shadow(color: Theme.shadow.opacity(0.75), radius: 1, y: 1)
     }
 }
 
 extension View {
-    func cardBubble(inFlight: Bool, radius: CGFloat = 20) -> some View { modifier(CardBubble(inFlight: inFlight, radius: radius)) }
+    func cardBubble(inFlight: Bool, radius: CGFloat = 24) -> some View { modifier(CardBubble(inFlight: inFlight, radius: radius)) }
 }
 
 // MARK: - Poll
 
-/// Question, options with live bars and counts, tap to vote, close by the creator.
+/// Question, how many answers, options as result bars with a check mark, "N votes sur M".
+/// Tap to vote, close by the creator.
 struct PollBubble: View {
     @Environment(AppModel.self) private var model
     let item: ChatItem
     let onVote: (String) -> Void
     let onClose: () -> Void
 
+    /// People who can vote: group members, 2 in a 1:1, unknown in a channel.
+    private var electorate: Int? {
+        guard let conversation = model.conversations.first(where: { $0.id == item.conversationId }) else { return nil }
+        switch conversation.kind {
+        case .direct: return 2
+        case .group: return model.groups.first { $0.id == conversation.peer }?.members.count
+        case .channel: return nil
+        }
+    }
+
     var body: some View {
         let poll = item.message.poll ?? .init(question: "", options: [], multi: false)
         let tally = item.state.tally()
-        let total = max(1, item.state.voterCount)
+        let voters = item.state.voterCount
+        let total = max(1, tally.values.reduce(0, +))
         let mine = Set(item.state.myVote)
         let closed = model.isClosed(item)
-        let leader = tally.values.max() ?? 0
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                Image(systemName: "chart.bar.fill")
-                Text(closed ? "SONDAGE CLOS" : poll.multi ? "SONDAGE · PLUSIEURS CHOIX" : "SONDAGE")
-            }
-            .font(Theme.mono(10, weight: .medium))
-            .foregroundStyle(Theme.secondary)
+        VStack(alignment: .leading, spacing: 0) {
             Text(poll.question)
-                .font(.headline)
-                .foregroundStyle(Theme.text)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(DS.label)
                 .fixedSize(horizontal: false, vertical: true)
+            Text(closed ? "Sondage clos" : poll.multi ? "Plusieurs réponses possibles" : "Une seule réponse")
+                .font(DS.TextStyle.subheadline)
+                .foregroundStyle(DS.label2)
+                .padding(.top, 4)
             VStack(spacing: 10) {
                 ForEach(poll.options) { option in
                     let count = tally[option.id] ?? 0
@@ -58,33 +67,41 @@ struct PollBubble: View {
                     Button {
                         onVote(option.id)
                     } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 10) {
-                                Image(systemName: picked ? "checkmark.circle.fill" : poll.multi ? "square" : "circle")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(picked ? Theme.mesh : Theme.dashed)
-                                    .contentTransition(.symbolEffect(.replace))
-                                Text(option.text)
-                                    .font(.subheadline.weight(picked ? .semibold : .regular))
-                                    .foregroundStyle(Theme.text)
-                                    .multilineTextAlignment(.leading)
-                                Spacer(minLength: 4)
-                                Text("\(count)")
-                                    .font(Theme.mono(12, weight: closed && count == leader && count > 0 ? .bold : .regular))
-                                    .foregroundStyle(Theme.secondary)
-                                    .contentTransition(.numericText())
-                            }
-                            GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                    Capsule().fill(Theme.track.opacity(0.6))
-                                    Capsule()
-                                        .fill(picked ? Theme.mesh : Theme.trackFill.opacity(0.55))
-                                        .frame(width: max(count > 0 ? 6 : 0, geo.size.width * CGFloat(count) / CGFloat(total)))
+                        HStack(spacing: 12) {
+                            ZStack {
+                                if picked {
+                                    Circle().fill(DS.accentFill)
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(DS.onAccent)
+                                } else {
+                                    Circle().strokeBorder(DS.label3, lineWidth: 1.5)
                                 }
                             }
-                            .frame(height: 5)
-                            .padding(.leading, 28)
+                            .frame(width: 26, height: 26)
+                            Text(option.text)
+                                .font(.system(size: 17))
+                                .foregroundStyle(DS.label)
+                                .multilineTextAlignment(.leading)
+                                .lineLimit(2)
+                            Spacer(minLength: 4)
+                            Text("\(count)")
+                                .font(.system(size: 17))
+                                .monospacedDigit()
+                                .foregroundStyle(DS.label2)
+                                .contentTransition(.numericText())
                         }
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 48)
+                        .background(alignment: .leading) {
+                            GeometryReader { geo in
+                                Rectangle()
+                                    .fill(DS.accentFill.opacity(picked ? 0.2 : 0.14))
+                                    .frame(width: geo.size.width * CGFloat(count) / CGFloat(total))
+                            }
+                        }
+                        .background(DS.cell2)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -96,32 +113,42 @@ struct PollBubble: View {
                     .accessibilityHint(closed ? "Sondage clos" : "Vote pour cette option")
                 }
             }
+            .padding(.top, 14)
             .animation(.spring(duration: 0.4, bounce: 0.15), value: tally)
-            HStack {
-                Text(item.state.voterCount == 0 ? "Aucun vote" : "\(item.state.voterCount) votant\(item.state.voterCount > 1 ? "s" : "")")
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(footer(voters: voters, closed: closed))
+                    .font(DS.TextStyle.subheadline)
+                    .foregroundStyle(DS.label2)
                     .contentTransition(.numericText())
-                Spacer()
                 if item.isMine, !closed {
-                    Button("Clore", action: onClose)
-                        .font(.caption.weight(.semibold))
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Theme.mesh)
+                    Button("Clore le sondage", action: onClose)
+                        .buttonStyle(.dsSmallCapsule)
                         .accessibilityHint("Plus personne ne pourra voter")
                 }
             }
+            .padding(.top, 12)
         }
-        .padding(14)
-        .frame(width: 272, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 14)
+        .frame(width: 300, alignment: .leading)
         .cardBubble(inFlight: item.isInFlight)
+    }
+
+    private func footer(voters: Int, closed: Bool) -> String {
+        let votes = "\(voters) vote\(voters > 1 ? "s" : "")"
+        let base = electorate.map { votes + " sur \($0)" } ?? votes
+        if voters == 0 { return closed ? "Aucun vote" : "Aucun vote pour l'instant" }
+        return closed ? base : base + " · résultats en direct"
     }
 }
 
 // MARK: - Location
 
-/// MapKit snapshot with the pin; live shares say until when and move with each update.
+/// MapKit snapshot with the pin, then "Position en direct", until when and how far from you.
+/// Live shares move with each update.
 struct LocationBubble: View {
+    @Environment(AppModel.self) private var model
     let item: ChatItem
     let onOpen: () -> Void
     let onStop: () -> Void
@@ -131,7 +158,7 @@ struct LocationBubble: View {
     @State private var image: UIImage?
     @State private var pulse = false
 
-    static let size = CGSize(width: 252, height: 150)
+    static let size = CGSize(width: 264, height: 132)
 
     var body: some View {
         let coord = AppModel.coordinate(of: item) ?? (0, 0)
@@ -143,7 +170,7 @@ struct LocationBubble: View {
                     if let image {
                         Image(uiImage: image).resizable().scaledToFill()
                     } else {
-                        Theme.track.opacity(0.5)
+                        DS.cell2
                         ProgressView()
                     }
                     pin(live: live)
@@ -156,30 +183,26 @@ struct LocationBubble: View {
             .accessibilityLabel(live ? "Position en direct" : "Position")
             .accessibilityHint("Ouvre la carte")
             HStack(spacing: 8) {
-                if live {
-                    Circle().fill(Theme.danger).frame(width: 8, height: 8)
-                        .opacity(pulse || reduceMotion ? 1 : 0.35)
-                }
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(title(live: live, wasLive: wasLive))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.text)
-                    Text(subtitle(live: live, wasLive: wasLive))
-                        .font(Theme.mono(10))
-                        .foregroundStyle(Theme.secondary)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(DS.label)
+                    Text(subtitle(live: live, coord: coord))
+                        .font(DS.TextStyle.subheadline)
+                        .foregroundStyle(DS.label2)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if live, item.isMine {
                     Button("Arrêter", action: onStop)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Theme.danger)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(DS.danger)
                         .buttonStyle(.plain)
                         .accessibilityHint("Arrête le partage en direct")
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
             .frame(width: Self.size.width, alignment: .leading)
         }
         .cardBubble(inFlight: item.isInFlight)
@@ -194,37 +217,46 @@ struct LocationBubble: View {
     }
 
     @ViewBuilder private func pin(live: Bool) -> some View {
-        if live {
-            ZStack {
-                Circle().fill(Theme.mesh.opacity(0.22)).frame(width: 46, height: 46)
-                    .scaleEffect(pulse && !reduceMotion ? 1.15 : 0.85)
-                Circle().fill(Theme.mesh).frame(width: 18, height: 18)
-                    .overlay(Circle().strokeBorder(.white, lineWidth: 3))
-                    .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
-            }
-        } else {
-            Image(systemName: "mappin.circle.fill")
-                .font(.system(size: 34))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, Theme.danger)
-                .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
-                .offset(y: -12)
+        ZStack {
+            Circle().fill(DS.accentFill.opacity(0.22)).frame(width: 56, height: 56)
+                .scaleEffect(live && pulse && !reduceMotion ? 1.12 : 0.92)
+            Circle().fill(DS.accentFill).frame(width: 40, height: 40)
+            Image(systemName: live ? "location.fill" : "mappin")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(DS.onAccent)
         }
+        .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
     }
 
     private func title(live: Bool, wasLive: Bool) -> String {
-        if live { return "En direct" }
+        if live { return "Position en direct" }
         if wasLive { return "Partage terminé" }
         return item.message.location?.name ?? "Position"
     }
 
-    private func subtitle(live: Bool, wasLive: Bool) -> String {
+    private func subtitle(live: Bool, coord: (Double, Double)) -> String {
+        var parts: [String] = []
         if live, let until = item.message.location?.liveUntil {
-            return "jusqu'à " + Date(timeIntervalSince1970: Double(until) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR")))
+            parts.append("Jusqu'à " + Date(timeIntervalSince1970: Double(until) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR"))))
         }
-        if let a = item.message.location?.accuracyM, a > 0 { return "précision \(Int(a.rounded())) m" }
-        let c = AppModel.coordinate(of: item) ?? (0, 0)
-        return String(format: "%.4f, %.4f", c.0, c.1)
+        if let distance = distance(to: coord) {
+            parts.append("à " + Self.distanceText(distance))
+        } else if let a = item.message.location?.accuracyM, a > 0 {
+            parts.append("précision \(Int(a.rounded())) m")
+        }
+        if parts.isEmpty { parts.append(String(format: "%.4f, %.4f", coord.0, coord.1)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Distance from where I am (known only while my position is in use), never for my own pin.
+    private func distance(to coord: (Double, Double)) -> Double? {
+        guard !item.isMine, let me = model.locationSharer.coordinate ?? (model.demo ? DemoData.here : nil) else { return nil }
+        return CLLocation(latitude: me.latitude, longitude: me.longitude).distance(from: CLLocation(latitude: coord.0, longitude: coord.1))
+    }
+
+    static func distanceText(_ m: Double) -> String {
+        if m < 1000 { return "\(Int((m / 10).rounded() * 10)) m" }
+        return String(format: "%.1f km", m / 1000).replacingOccurrences(of: ".", with: ",")
     }
 }
 
@@ -244,14 +276,14 @@ struct DocumentBubble: View {
                 tile(name: name, mime: mime, thumb: a?.thumb)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(name)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.text)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(DS.label)
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .multilineTextAlignment(.leading)
                     Text(details(name: name, mime: mime, pages: a?.pages, size: a?.size ?? 0))
-                        .font(Theme.mono(10))
-                        .foregroundStyle(Theme.secondary)
+                        .font(DS.TextStyle.footnote)
+                        .foregroundStyle(DS.label2)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -259,8 +291,8 @@ struct DocumentBubble: View {
                     ProgressView().controlSize(.small)
                 }
             }
-            .padding(10)
-            .frame(width: 272)
+            .padding(12)
+            .frame(width: 280)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -277,7 +309,7 @@ struct DocumentBubble: View {
                 .scaledToFill()
                 .frame(width: 50, height: 64, alignment: .top)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.ring, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(DS.separator, lineWidth: 1))
                 .overlay(alignment: .bottomLeading) { badge(name: name, mime: mime).padding(3) }
         } else {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -331,31 +363,25 @@ struct LinkCard: View {
                         .frame(height: min(150, max(90, 240 / max(0.6, ratio))))
                         .clipped()
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text((link.site ?? URL(string: link.url)?.host() ?? "").uppercased())
-                        .font(Theme.mono(10, weight: .medium))
-                        .foregroundStyle(tint.opacity(0.75))
-                        .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
                     if let title = link.title, !title.isEmpty {
                         Text(title)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(tint)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                     }
-                    if let d = link.description, !d.isEmpty {
-                        Text(d)
-                            .font(.caption)
-                            .foregroundStyle(tint.opacity(0.8))
-                            .lineLimit(2)
-                    }
+                    Text(link.site ?? URL(string: link.url)?.host() ?? "")
+                        .font(.system(size: 15))
+                        .foregroundStyle(DS.label2)
+                        .lineLimit(1)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(tint.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.black.opacity(0.16))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)

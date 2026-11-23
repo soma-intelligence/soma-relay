@@ -1,33 +1,22 @@
 import SwiftUI
 import UIKit
 
-/// Bubble outline with an optional tail at the bottom corner on the sender's side. The tail
-/// width is always reserved, so bubbles of one run line up whether they have a tail or not.
+/// Bubble outline of the design system: 20 pt continuous corners, and on the last bubble of a
+/// run (the "tail") the bottom corner on the sender's side tightens to 6 pt.
 nonisolated struct BubbleShape: Shape {
-    static let tailWidth: CGFloat = 6
+    /// Kept for callers that reserved room for the old drawn tail; the new tail is a corner.
+    static let tailWidth: CGFloat = 0
     var mine: Bool
     var tail: Bool
     var radius: CGFloat = 20
 
     func path(in r: CGRect) -> Path {
-        let tw = Self.tailWidth
-        let body = CGRect(x: mine ? r.minX : r.minX + tw, y: r.minY, width: max(0, r.width - tw), height: r.height)
-        let rounded = Path(roundedRect: body, cornerRadius: min(radius, body.height / 2), style: .continuous)
-        guard tail else { return rounded }
-        var t = Path()
-        if mine {
-            let x = body.maxX, y = body.maxY
-            t.move(to: CGPoint(x: x - 14, y: y))
-            t.addQuadCurve(to: CGPoint(x: x + tw, y: y), control: CGPoint(x: x - 2, y: y))
-            t.addQuadCurve(to: CGPoint(x: x, y: y - 16), control: CGPoint(x: x, y: y - 4))
-        } else {
-            let x = body.minX, y = body.maxY
-            t.move(to: CGPoint(x: x + 14, y: y))
-            t.addQuadCurve(to: CGPoint(x: x - tw, y: y), control: CGPoint(x: x + 2, y: y))
-            t.addQuadCurve(to: CGPoint(x: x, y: y - 16), control: CGPoint(x: x, y: y - 4))
-        }
-        t.closeSubpath()
-        return rounded.union(t)
+        let big = min(radius, r.height / 2)
+        let small = tail ? min(6, big) : big
+        return UnevenRoundedRectangle(
+            topLeadingRadius: big, bottomLeadingRadius: mine ? big : small,
+            bottomTrailingRadius: mine ? small : big, topTrailingRadius: big, style: .continuous
+        ).path(in: r)
     }
 }
 
@@ -56,7 +45,7 @@ enum EmojiImage {
     }
 }
 
-/// Reactions under a bubble: `👍 2  ❤️`, mine outlined. Pops in.
+/// Reactions under a bubble: one chip per emoji (`👍 2`), yours tinted lime. Pops in.
 struct ReactionPill: View {
     let summary: [(emoji: String, count: Int, mine: Bool)]
     let onTap: (String) -> Void
@@ -67,45 +56,48 @@ struct ReactionPill: View {
                 Button {
                     onTap(entry.emoji)
                 } label: {
-                    HStack(spacing: 2) {
-                        Text(entry.emoji).font(.system(size: 15))
-                        if entry.count > 1 {
+                    HStack(spacing: 4) {
+                        Text(entry.emoji).font(.system(size: 13))
+                        if entry.count > 1 || entry.mine {
                             Text("\(entry.count)")
-                                .font(Theme.mono(11, weight: .medium))
-                                .foregroundStyle(Theme.text)
+                                .font(.system(size: 12, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(entry.mine ? DS.accent : DS.label2)
                         }
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(entry.mine ? Theme.mesh.opacity(0.18) : Color.clear, in: Capsule())
-                    .overlay { if entry.mine { Capsule().strokeBorder(Theme.mesh.opacity(0.6), lineWidth: 1) } }
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(entry.mine ? DS.accentSoft : DS.cell2, in: Capsule())
+                    .background(Capsule().fill(DS.cell2))
+                    .overlay(Capsule().strokeBorder(DS.background, lineWidth: 2).padding(-2))
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(entry.emoji), \(entry.count) réaction\(entry.count > 1 ? "s" : "")\(entry.mine ? ", dont la tienne" : "")")
                 .accessibilityHint(entry.mine ? "Retire ta réaction" : "Réagis pareil")
             }
         }
-        .padding(3)
-        .background(Theme.incoming, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.background, lineWidth: 2))
-        .shadow(color: Theme.shadow, radius: 3, y: 1)
     }
 }
 
-/// "Aujourd'hui", "Hier", weekday or date, centred.
+/// "Aujourd'hui 10:42", "Hier", weekday or date, centred plain text.
 struct DaySeparator: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(Theme.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(Theme.cardFill, in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.cardStroke))
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(DS.label2)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
             .accessibilityAddTraits(.isHeader)
+    }
+
+    /// Day label followed by the time of the first message of that day.
+    static func label(withTime ms: Int64) -> String {
+        let time = Date(timeIntervalSince1970: Double(ms) / 1000)
+            .formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR")))
+        return label(for: ms) + " " + time
     }
 
     static func label(for ms: Int64, now: Date = Date()) -> String {
@@ -129,12 +121,12 @@ struct UnreadSeparator: View {
     let count: Int
     var body: some View {
         HStack(spacing: 10) {
-            Rectangle().fill(Theme.mesh.opacity(0.4)).frame(height: 1)
+            Rectangle().fill(DS.accentLine).frame(height: 1)
             Text(count > 1 ? "\(count) non lus" : "1 non lu")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Theme.mesh)
+                .foregroundStyle(DS.accent)
                 .fixedSize()
-            Rectangle().fill(Theme.mesh.opacity(0.4)).frame(height: 1)
+            Rectangle().fill(DS.accentLine).frame(height: 1)
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
@@ -147,8 +139,8 @@ struct SystemLine: View {
     var icon = "timer"
     var body: some View {
         Label(text, systemImage: icon)
-            .font(.caption)
-            .foregroundStyle(Theme.secondary)
+            .font(DS.TextStyle.caption)
+            .foregroundStyle(DS.label2)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -168,7 +160,7 @@ struct TypingBubble: View {
                 ForEach(0..<3) { i in
                     let wave = sin(t * 6 - Double(i) * 0.9)
                     Circle()
-                        .fill(Theme.secondary)
+                        .fill(DS.label2)
                         .frame(width: 7, height: 7)
                         .offset(y: reduceMotion ? 0 : -3 * max(0, wave))
                         .opacity(reduceMotion ? 0.4 + 0.6 * max(0, wave) : 0.55 + 0.45 * max(0, wave))
@@ -177,7 +169,7 @@ struct TypingBubble: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
             .padding(.leading, BubbleShape.tailWidth)
-            .background(BubbleShape(mine: false, tail: true).fill(Theme.incoming))
+            .background(BubbleShape(mine: false, tail: true).fill(DS.bubbleIn))
         }
         .accessibilityElement()
         .accessibilityLabel("En train d'écrire")

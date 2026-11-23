@@ -131,7 +131,7 @@ struct ConversationsView: View {
         .onAppear {
             guard path.isEmpty, let screen = DemoData.screen else { return }
             switch screen {
-            case "chat", "chat-dark", "edit", "camera-preview", "composer":
+            case "chat", "chat-dark", "edit", "camera-preview", "composer", "route":
                 path.append(AppModel.directId(DemoData.ines))
             case "group", "attach", "poll-new", "location", "map", "search", "reactions":
                 path.append(AppModel.groupId("stand"))

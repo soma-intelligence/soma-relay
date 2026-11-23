@@ -54,32 +54,47 @@ struct ChatItem: Identifiable, Equatable {
         Date(timeIntervalSince1970: Double(message.ts) / 1000).formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "fr_FR")))
     }
 
-    /// The mono line under the bubble (`MODIFIÉ · MESH 2 · LU`).
-    var meta: String {
-        let base = transportMeta
-        return isEdited ? "MODIFIÉ · " + base : base
+    /// What the line under the last bubble of a run says, in plain words ("Mesh · Lu",
+    /// "En route, confié à 3 relais", "Par le nœud · Reçu", "SMS").
+    struct Meta: Hashable {
+        enum Tone { case plain, sms, warning }
+        var icon: String?
+        var text: String
+        var tone: Tone = .plain
     }
 
-    private var transportMeta: String {
-        var parts: [String] = []
+    var meta: Meta {
+        var m = transportMeta
+        if isEdited { m.text = "Modifié · " + m.text }
+        return m
+    }
+
+    /// Transport glyph and name, as the design system writes them.
+    static func transportName(_ transport: Transport) -> (icon: String?, name: String) {
         switch transport {
-        case .mesh: parts.append(hops.map { "MESH \($0)" } ?? "MESH")
-        case .node: parts.append("NET")
-        case .sms: parts.append("SMS")
-        case .local: parts.append("LOCAL")
+        case .mesh: ("point.3.connected.trianglepath.dotted", "Mesh")
+        case .node: ("globe", "Par le nœud")
+        case .sms: ("message.fill", "SMS")
+        case .local: (nil, "Canal local")
         }
-        guard isMine else { return parts.joined(separator: " · ") }
+    }
+
+    private var transportMeta: Meta {
+        let t = Self.transportName(transport)
+        let tone: Meta.Tone = transport == .sms ? .sms : .plain
+        guard isMine else {
+            return Meta(icon: t.icon, text: transport == .local ? time : t.name + " · " + time, tone: tone)
+        }
         switch status {
-        case .pending: return "EN ATTENTE · aucun lien"
+        case .pending: return Meta(icon: "hourglass", text: "En attente d'un lien")
         case .sent where transport == .mesh:
             let n = relays ?? 1
-            return "EN ROUTE · confié à \(n) relais"
-        case .sent: parts.append("ENVOYÉ")
-        case .delivered: parts.append("REÇU")
-        case .read: parts.append("LU")
-        case .failed: return "ÉCHEC · touche pour réessayer"
+            return Meta(icon: "hourglass", text: "En route, confié à \(n) relais")
+        case .sent: return Meta(icon: t.icon, text: transport == .local ? "Envoyé · " + time : t.name + " · Envoyé", tone: tone)
+        case .delivered: return Meta(icon: t.icon, text: t.name + " · Reçu", tone: tone)
+        case .read: return Meta(icon: t.icon, text: t.name + " · Lu", tone: tone)
+        case .failed: return Meta(icon: "exclamationmark.circle.fill", text: "Échec, touche Réessayer", tone: .warning)
         }
-        return parts.joined(separator: " · ")
     }
 
     var accessibilityStatus: String {

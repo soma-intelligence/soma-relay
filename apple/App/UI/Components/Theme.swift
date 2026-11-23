@@ -89,13 +89,21 @@ extension View {
     }
 }
 
-/// Mono uppercase metadata line under bubbles (`MESH 2 · LU`).
+/// Plain metadata line under the last bubble of a run: transport glyph and words, 11 pt tertiary.
 struct MetaText: View {
-    let text: String
+    let meta: ChatItem.Meta
     var body: some View {
-        Text(text)
-            .font(Theme.mono(10))
-            .foregroundStyle(Theme.secondary)
+        HStack(spacing: 4) {
+            if let icon = meta.icon {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundStyle(meta.tone == .sms ? DS.sms : meta.tone == .warning ? DS.danger : DS.label3)
+            }
+            Text(meta.text)
+                .foregroundStyle(meta.tone == .warning ? DS.danger : DS.label3)
+        }
+        .font(.system(size: 11))
+        .lineLimit(1)
     }
 }
 

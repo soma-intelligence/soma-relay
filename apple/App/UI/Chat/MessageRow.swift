@@ -38,7 +38,7 @@ struct MessageRow: View {
 
     @State private var drag: CGFloat = 0
     @State private var armed = false
-    @ScaledMetric(relativeTo: .body) private var textSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .body) private var textSize: CGFloat = 17
 
     private static let replyThreshold: CGFloat = 52
     private var alignment: HorizontalAlignment { item.isMine ? .trailing : .leading }
@@ -48,15 +48,16 @@ struct MessageRow: View {
         VStack(alignment: alignment, spacing: 3) {
             if showSender, let name = item.senderName {
                 Text(name)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.senderColor(item.sender))
-                    .padding(.leading, 14 + tw)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DS.label2)
+                    .padding(.leading, 14)
+                    .padding(.top, 4)
             }
             if item.message.forwarded == true, !item.isDeleted {
                 Label("Transféré", systemImage: "arrowshape.turn.up.right.fill")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Theme.secondary)
-                    .padding(.horizontal, 10 + tw)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(DS.label3)
+                    .padding(.horizontal, 10)
             }
             bubble
                 .contentShape(.contextMenuPreview, contextShape)
@@ -65,7 +66,7 @@ struct MessageRow: View {
                 .background(alignment: .leading) {
                     Image(systemName: "arrowshape.turn.up.left.circle.fill")
                         .font(.system(size: 26))
-                        .foregroundStyle(armed ? Theme.mesh : Theme.dashed)
+                        .foregroundStyle(armed ? DS.accent : DS.label3)
                         .scaleEffect(armed ? 1.1 : 0.8)
                         .opacity(Double(min(1, drag / Self.replyThreshold)))
                         .offset(x: item.isMine ? -34 + drag * 0.2 : -30 + drag * 0.4)
@@ -74,15 +75,16 @@ struct MessageRow: View {
                 .simultaneousGesture(swipeToReply, isEnabled: !item.isDeleted && !item.isSystem)
             if !item.state.reactionSummary.isEmpty {
                 ReactionPill(summary: item.state.reactionSummary) { emoji in actions.react(emoji, item) }
-                    .padding(item.isMine ? .trailing : .leading, 10 + tw)
-                    .padding(.top, -12)
+                    .padding(item.isMine ? .trailing : .leading, 10)
+                    .padding(.top, -6)
                     .transition(reduceMotion ? .opacity : .scale(scale: 0.4, anchor: item.isMine ? .topTrailing : .topLeading).combined(with: .opacity))
                     .zIndex(1)
             }
             if position.last || item.status == .failed || item.status == .pending && item.isMine {
-                MetaText(text: item.meta)
-                    .padding(item.isMine ? .trailing : .leading, 8 + tw)
+                MetaText(meta: item.meta)
+                    .padding(.horizontal, 6)
                     .padding(.top, 1)
+                    .padding(.bottom, 6)
                     .id(item.meta)
                     .transition(.opacity)
                     .accessibilityHidden(true)
@@ -108,7 +110,7 @@ struct MessageRow: View {
         .frame(maxWidth: .infinity, alignment: item.isMine ? .trailing : .leading)
         .background {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Theme.mesh.opacity(flashing ? 0.16 : 0))
+                .fill(DS.accentSoft.opacity(flashing ? 1 : 0))
                 .padding(.horizontal, -6)
                 .animation(.easeOut(duration: flashing ? 0.15 : 0.9), value: flashing)
         }
@@ -248,10 +250,18 @@ struct MessageRow: View {
         }
     }
 
-    private var colors: (fill: Color, text: Color) {
-        if !item.isMine { return (Theme.incoming, Theme.text) }
-        if item.isInFlight { return (.clear, Theme.text) }
-        return Theme.bubble(for: item.transport)
+    /// One colour for sent, one for received, whatever the transport. In flight: outline only.
+    private var colors: (fill: AnyShapeStyle, text: Color) {
+        if !item.isMine { return (AnyShapeStyle(DS.bubbleIn), DS.label) }
+        if item.isInFlight { return (AnyShapeStyle(Color.clear), DS.label2) }
+        return (AnyShapeStyle(LinearGradient(colors: [DS.bubbleOutTop, DS.bubbleOut], startPoint: .top, endPoint: .bottom)), DS.label)
+    }
+
+    /// Lime rule around sent bubbles (0.5 pt at 20 %), stronger and solid while in flight.
+    @ViewBuilder private func outline<S: Shape>(_ shape: S) -> some View {
+        if item.isMine {
+            shape.stroke(DS.accentFill.opacity(item.isInFlight ? 0.28 : 0.2), lineWidth: item.isInFlight ? 1 : 0.5)
+        }
     }
 
     private var shape: BubbleShape { BubbleShape(mine: item.isMine, tail: position.last) }
@@ -273,12 +283,11 @@ struct MessageRow: View {
                     .frame(minWidth: 200)
             }
         }
-        .padding(.horizontal, item.isInFlight ? 13 : 14)
-        .padding(.vertical, item.isInFlight ? 8 : 9)
-        .padding(item.isMine ? .trailing : .leading, tw)
+        .padding(.horizontal, 14)
+        .padding(.top, 9)
+        .padding(.bottom, 10)
         .background(shape.fill(colors.fill))
-        .overlay { if item.isInFlight { shape.stroke(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])) } }
-        .shadow(color: item.isMine ? .clear : Theme.shadow.opacity(0.75), radius: 1, y: 1)
+        .overlay { outline(shape) }
         .frame(maxWidth: maxWidth, alignment: item.isMine ? .trailing : .leading)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -286,11 +295,10 @@ struct MessageRow: View {
     private var deletedBubble: some View {
         Label("Message supprimé", systemImage: "nosign")
             .font(.system(size: textSize - 1).italic())
-            .foregroundStyle(Theme.secondary)
+            .foregroundStyle(DS.label3)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .padding(item.isMine ? .trailing : .leading, tw)
-            .background(shape.stroke(Theme.ring, lineWidth: 1))
+            .background(shape.stroke(DS.separator, lineWidth: 1))
     }
 
     /// Text with tappable http(s) links.
@@ -307,29 +315,35 @@ struct MessageRow: View {
         return out
     }
 
+    /// Quoted reply: lime rule, the author in lime, one line of the original.
     private func quote(_ q: ChatItem) -> some View {
         Button {
             actions.openQuote(q.id)
         } label: {
-            HStack(spacing: 8) {
-                Capsule().fill(q.isMine ? colors.text.opacity(0.6) : Theme.senderColor(q.sender)).frame(width: 3)
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 10) {
+                Capsule().fill(DS.accent).frame(width: 3)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(q.isMine ? "Toi" : (q.senderName ?? model.name(of: q.sender)))
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(DS.accent)
                     Text(q.summary)
-                        .font(.caption)
-                        .lineLimit(2)
+                        .font(.system(size: 15))
+                        .foregroundStyle(DS.label2)
+                        .lineLimit(1)
                         .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(colors.text.opacity(0.85))
-            .padding(.vertical, 5)
-            .padding(.horizontal, 8)
-            .background(colors.text.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .padding(.vertical, 7)
+            .padding(.leading, 0)
+            .padding(.trailing, 10)
+            .background(Color.black.opacity(item.isMine ? 0.22 : 0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, -8)
+        .padding(.top, -2)
         .accessibilityLabel("En réponse à : " + q.summary)
         .accessibilityHint("Affiche le message d'origine")
     }
@@ -343,38 +357,38 @@ struct MessageRow: View {
                 player.toggle(id: item.id, data: item.mediaPath.flatMap(MediaStore.load))
             } label: {
                 Image(systemName: playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 13))
+                    .font(.system(size: 15))
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 36, height: 36)
-                    .background(Theme.playFill, in: Circle())
-                    .foregroundStyle(Theme.playIcon)
+                    .frame(width: 40, height: 40)
+                    .background(DS.fill2, in: Circle())
+                    .foregroundStyle(DS.label)
                     .contentShape(Circle().inset(by: -4))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(playing ? "Mettre en pause" : "Lire la note vocale")
             if let levels = attachment?.levels, !levels.isEmpty {
-                Waveform(levels: levels, progress: playing ? player.progress : 0)
-                    .frame(height: 22)
+                Waveform(levels: levels, progress: playing ? player.progress : 1, active: DS.label.opacity(0.85), inactive: DS.label3)
+                    .frame(height: 30)
             } else {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Theme.track)
-                        Capsule().fill(Theme.trackFill).frame(width: geo.size.width * (playing ? player.progress : 0.35))
+                        Capsule().fill(DS.label3)
+                        Capsule().fill(DS.label).frame(width: geo.size.width * (playing ? player.progress : 0.35))
                     }
                 }
                 .frame(height: 3)
             }
             Text(Self.duration(attachment?.durationMs ?? 0))
-                .font(Theme.mono(11))
-                .foregroundStyle(Theme.secondary)
+                .font(.system(size: 15))
+                .monospacedDigit()
+                .foregroundStyle(DS.label2)
         }
         .padding(.leading, 8)
         .padding(.trailing, 14)
         .padding(.vertical, 8)
-        .frame(width: 236)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.incoming))
-        .overlay { if item.isInFlight { RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Theme.dashed, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])) } }
-        .shadow(color: Theme.shadow.opacity(0.75), radius: 1, y: 1)
+        .frame(width: 240)
+        .background(shape.fill(colors.fill))
+        .overlay { outline(shape) }
     }
 
     private var media: some View {
@@ -388,7 +402,7 @@ struct MessageRow: View {
                 if let image {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
-                    Theme.incoming
+                    DS.bubbleIn
                     ProgressView()
                 }
                 if item.message.kind == .video {
@@ -403,7 +417,7 @@ struct MessageRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(item.isInFlight ? Theme.dashed : Color.clear, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    .strokeBorder(item.isInFlight ? DS.accentFill.opacity(0.28) : Color.clear, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
