@@ -1,13 +1,18 @@
 import SwiftUI
 
-/// A group: photo and name (admins change them, sent as `group-profile`), members with their
-/// faces, add and remove (admins), and leave (`group-leave` first, spec section 6).
+/// A group (relay-screens 11): photo, name and "Groupe chiffré · N membres", quick actions
+/// (Ajouter, Rechercher, Sourdine), members with their role and seal, the note on removing someone,
+/// the group settings (disappearing messages, photos and files) and "Quitter le groupe" on its own.
+/// Admins change the photo and the name (sent as `group-profile`), add and remove members; leaving
+/// sends `group-leave` first (spec section 6).
 struct GroupDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let groupId: String
     /// After leaving: the chat closes too.
     var onLeft: () -> Void = {}
+    /// "Rechercher": the chat opens its search bar.
+    var onSearch: (() -> Void)?
 
     @State private var renaming = false
     @State private var newName = ""
@@ -20,6 +25,8 @@ struct GroupDetailView: View {
     private var isAdmin: Bool { model.isAdmin(of: groupId) }
     private var name: String { model.groupName(groupId) }
     private var photo: UIImage? { model.photos[AppModel.groupPhotoKey(groupId)] }
+    private var conversationId: String { AppModel.groupId(groupId) }
+    private var conversation: ConversationRecord? { model.conversations.first { $0.id == conversationId } }
 
     /// Me first, then admins, then by name.
     private var members: [String] {
@@ -33,75 +40,73 @@ struct GroupDetailView: View {
         }
     }
 
+    /// Photos, videos and files sent in the group (on this phone).
+    private var mediaCount: Int {
+        _ = model.messageVersion
+        return model.items(in: conversationId).filter { [.image, .video, .file].contains($0.message.kind) }.count
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    VStack(spacing: 10) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    DSProfileHeader(name: name, statusIcon: "lock.fill", statusIconTint: DS.label2, status: "Groupe chiffré · \(group?.members.count ?? 0) membres") {
                         if isAdmin {
-                            EditablePhoto(name: name, photo: photo, size: 96, icon: "person.3.fill", tint: Theme.incoming, cropTitle: "Photo du groupe") { image in
+                            EditablePhoto(name: name, photo: photo, size: 96, icon: "person.3.fill", cropTitle: "Photo du groupe") { image in
                                 model.setGroupProfile(groupId, photo: .some(image))
                             }
                         } else {
-                            Avatar(name: name, size: 96, icon: "person.3.fill", photo: photo)
+                            DSAvatar(name: name, size: 96, icon: "person.3.fill", photo: photo)
                         }
-                        Button {
+                    }
+                    .padding(.top, 8)
+                    actions
+                        .padding(.horizontal, DS.Space.margin)
+                        .padding(.top, 20)
+                    DSSection(header: "Membres") {
+                        ForEach(Array(members.enumerated()), id: \.element) { index, fp in
+                            memberRow(fp, first: index == 0)
+                        }
+                    } footer: {
+                        if isAdmin {
+                            Text("Retirer quelqu'un change la clé du groupe : ses futurs messages lui restent illisibles. Touche longuement un membre pour le retirer.")
+                        }
+                    }
+                    .padding(.top, DS.Space.group)
+                    settings
+                        .padding(.top, DS.Space.group)
+                    DSSection {
+                        DSRow(first: true) {
+                            Button("Quitter le groupe", role: .destructive) { confirmLeave = true }
+                                .font(DS.TextStyle.body)
+                                .foregroundStyle(DS.danger)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.top, DS.Space.group)
+                }
+                .padding(.bottom, 32)
+            }
+            .background(DS.background)
+            .animation(.smooth, value: members)
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: ContactRoute.self) { ContactDetailView(fingerprint: $0.fingerprint) }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Fermer", systemImage: "xmark") { dismiss() }
+                        .tint(DS.label)
+                }
+                if isAdmin {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Renommer le groupe", systemImage: "pencil") {
                             newName = name
                             renaming = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(name).font(.title2.bold()).foregroundStyle(Theme.text)
-                                if isAdmin {
-                                    Image(systemName: "pencil").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.secondary)
-                                }
-                            }
                         }
-                        .buttonStyle(.plain)
-                        .disabled(!isAdmin)
-                        .accessibilityHint(isAdmin ? "Renommer le groupe" : "")
-                        Text("Groupe chiffré · \(group?.members.count ?? 0) membres")
-                            .font(Theme.mono(11))
-                            .foregroundStyle(Theme.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .listRowBackground(Color.clear)
-                }
-                Section {
-                    if isAdmin {
-                        Button {
-                            adding = true
-                        } label: {
-                            Label("Ajouter des membres", systemImage: "person.badge.plus")
-                        }
-                        .disabled(candidates.isEmpty)
-                    }
-                    ForEach(members, id: \.self) { fp in
-                        memberRow(fp)
-                            .swipeActions(edge: .trailing) {
-                                if isAdmin, fp != me {
-                                    Button("Retirer", systemImage: "person.badge.minus", role: .destructive) { removing = fp }
-                                }
-                            }
-                    }
-                } header: {
-                    Text("\(group?.members.count ?? 0) membres")
-                } footer: {
-                    if isAdmin {
-                        Text("Retirer quelqu'un change la clé du groupe : ses futurs messages lui restent illisibles.")
+                        .tint(DS.label)
                     }
                 }
-                Section {
-                    Button("Quitter le groupe", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { confirmLeave = true }
-                        .tint(Theme.danger)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background)
-            .animation(.smooth, value: members)
-            .navigationTitle("Infos du groupe")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("OK") { dismiss() } }
             }
             .alert("Renommer le groupe", isPresented: $renaming) {
                 TextField("Nom du groupe", text: $newName)
@@ -134,6 +139,7 @@ struct GroupDetailView: View {
                 }
             }
         }
+        .presentationCornerRadius(DS.Radius.sheet)
     }
 
     private var candidates: [ContactJSON] {
@@ -141,38 +147,122 @@ struct GroupDetailView: View {
         return model.contacts.filter { !inGroup.contains($0.fingerprint) }
     }
 
-    private func memberRow(_ fp: String) -> some View {
-        let isMe = fp == me
-        let display = isMe ? model.displayName : model.name(of: fp)
-        let known = model.contact(fp)
-        return HStack(spacing: 12) {
-            Avatar(name: display, size: 40, tint: Theme.senderColor(isMe ? nil : fp).opacity(0.25), photo: model.photo(for: isMe ? nil : fp))
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    Text(isMe ? "Toi" : display).foregroundStyle(Theme.text)
-                    if known?.verified == true {
-                        Image(systemName: "checkmark.seal.fill").font(.caption).foregroundStyle(Theme.mesh).accessibilityLabel("vérifié")
-                    }
-                }
-                if !isMe, known == nil {
-                    Text("pas dans ton répertoire").font(Theme.mono(10)).foregroundStyle(Theme.secondary)
+    // MARK: Quick actions
+
+    private var actions: some View {
+        HStack(spacing: 10) {
+            DSQuickAction(systemName: "person.badge.plus", title: "Ajouter") { adding = true }
+                .disabled(!isAdmin || candidates.isEmpty)
+                .opacity(!isAdmin || candidates.isEmpty ? 0.45 : 1)
+                .accessibilityHint(isAdmin ? "" : "Seuls les admins ajoutent des membres")
+            if let onSearch {
+                DSQuickAction(systemName: "magnifyingglass", title: "Rechercher") {
+                    dismiss()
+                    onSearch()
                 }
             }
-            Spacer()
+            let muted = conversation?.isMuted() == true
+            Menu {
+                Button("1 heure") { model.mute(conversationId, for: 3600) }
+                Button("8 heures") { model.mute(conversationId, for: 8 * 3600) }
+                Button("1 semaine") { model.mute(conversationId, for: 7 * 86_400) }
+                Button("Toujours") { model.mute(conversationId, for: nil) }
+                if muted {
+                    Button("Réactiver les notifications", systemImage: "bell") { model.mute(conversationId, for: 0) }
+                }
+            } label: {
+                DSQuickActionLabel(systemName: muted ? "bell.slash.fill" : "bell.slash", title: muted ? "En sourdine" : "Sourdine", accent: false)
+            }
+            .buttonStyle(.plain)
+            .disabled(conversation == nil)
+            .accessibilityLabel(conversation.flatMap(AppModel.muteLabel) ?? "Sourdine")
+        }
+    }
+
+    // MARK: Members
+
+    @ViewBuilder private func memberRow(_ fp: String, first: Bool) -> some View {
+        let isMe = fp == me
+        let known = model.contact(fp)
+        let row = DSRow(first: first, minHeight: 60, separatorInset: 70) {
+            memberLabel(fp, isMe: isMe, known: known)
+        }
+        .contextMenu {
+            if isAdmin, !isMe {
+                Button("Retirer du groupe", systemImage: "person.badge.minus", role: .destructive) { removing = fp }
+            }
+        }
+        if let known, !isMe {
+            NavigationLink(value: ContactRoute(fingerprint: known.fingerprint)) { row.contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+        } else {
+            row
+        }
+    }
+
+    private func memberLabel(_ fp: String, isMe: Bool, known: ContactJSON?) -> some View {
+        let display = isMe ? model.displayName : model.name(of: fp)
+        return HStack(spacing: 14) {
+            DSAvatar(name: display, size: 40, photo: model.photo(for: isMe ? nil : fp))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(isMe ? "Toi" : display).font(DS.TextStyle.body).foregroundStyle(DS.label)
+                    if known?.verified == true {
+                        Image(systemName: "checkmark.seal.fill").font(.system(size: 14)).foregroundStyle(DS.accent).accessibilityLabel("vérifié")
+                    }
+                }
+                if !isMe, let known, !known.verified {
+                    Text("Mots pas encore vérifiés").font(DS.TextStyle.footnote).foregroundStyle(DS.label2)
+                } else if !isMe, known == nil {
+                    Text("Pas dans tes contacts").font(DS.TextStyle.footnote).foregroundStyle(DS.label2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if group?.admins.contains(fp) == true {
-                Text("Admin")
-                    .font(Theme.mono(10, weight: .medium))
-                    .foregroundStyle(Theme.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Theme.softButton, in: Capsule())
+                Text("Admin").font(.system(size: 13, weight: .medium)).foregroundStyle(DS.label2)
+            }
+            if let known, !isMe, !known.verified {
+                DSChevron()
             }
         }
         .accessibilityElement(children: .combine)
     }
+
+    // MARK: Settings
+
+    private var settings: some View {
+        DSSection {
+            DSRow(first: true) {
+                Menu {
+                    Picker("Messages éphémères", selection: Binding(get: { conversation?.expireS ?? 0 }, set: { model.setTimer($0, in: conversationId) })) {
+                        ForEach(AppModel.timerChoices, id: \.self) { s in
+                            Text(s == 0 ? "Désactivés" : AppModel.timerLabel(s)).tag(s)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("Messages éphémères").font(DS.TextStyle.body).foregroundStyle(DS.label)
+                        Spacer(minLength: 8)
+                        Text((conversation?.expireS ?? 0) == 0 ? "Non" : AppModel.timerLabel(conversation?.expireS ?? 0))
+                            .font(DS.TextStyle.body).foregroundStyle(DS.label2)
+                        DSChevron()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(conversation == nil)
+            }
+            DSRow {
+                Text("Photos et fichiers").font(DS.TextStyle.body).foregroundStyle(DS.label)
+                Spacer(minLength: 8)
+                Text("\(mediaCount)").font(DS.TextStyle.body).foregroundStyle(DS.label2).monospacedDigit()
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
 }
 
-/// Contacts with checkmarks (new group, add members).
+/// Contacts with checkmarks (add members), on the design system.
 struct ContactPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let title: String
@@ -183,11 +273,13 @@ struct ContactPickerSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                ContactChecklist(contacts: contacts, selected: $selected)
+            ScrollView {
+                DSSection {
+                    ContactChecklist(contacts: contacts, selected: $selected)
+                }
+                .padding(.top, 8)
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background)
+            .background(DS.background)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -204,14 +296,15 @@ struct ContactPickerSheet: View {
     }
 }
 
-/// The rows: face, name, a checkmark that springs in.
+/// The rows of a grouped card: face, name, a lime checkmark that springs in.
 struct ContactChecklist: View {
     let contacts: [ContactJSON]
     @Binding var selected: [String]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ForEach(contacts.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }) { contact in
+        let sorted = contacts.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        ForEach(Array(sorted.enumerated()), id: \.element.id) { index, contact in
             let on = selected.contains(contact.fingerprint)
             Button {
                 withAnimation(reduceMotion ? .easeInOut(duration: 0.15) : .spring(duration: 0.3, bounce: 0.4)) {
@@ -219,12 +312,13 @@ struct ContactChecklist: View {
                 }
                 Haptics.select()
             } label: {
-                HStack {
+                DSRow(first: index == 0, minHeight: 64, separatorInset: 70) {
                     ContactRow(contact: contact)
                     Spacer()
                     Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                        .font(.title2)
-                        .foregroundStyle(on ? Theme.mesh : Theme.dashed)
+                        .font(.system(size: 26))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(on ? DS.onAccent : DS.label3, on ? DS.accentFill : DS.label3)
                         .contentTransition(.symbolEffect(.replace))
                         .scaleEffect(on ? 1 : 0.92)
                 }

@@ -211,12 +211,18 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showDetails) {
             if let peer {
-                NavigationStack { ContactDetailView(fingerprint: peer.fingerprint) }
+                NavigationStack { ContactDetailView(fingerprint: peer.fingerprint, showsClose: true) }
             }
         }
         .sheet(isPresented: $showGroup) {
             if let groupId {
-                GroupDetailView(groupId: groupId) { dismiss() }
+                GroupDetailView(groupId: groupId, onLeft: { dismiss() }, onSearch: {
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(450))
+                        withAnimation(.snappy) { searching = true }
+                        searchFocused = true
+                    }
+                })
             }
         }
         .sheet(item: $forwardItem) { ForwardSheet(item: $0) }
