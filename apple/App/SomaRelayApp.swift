@@ -109,7 +109,7 @@ struct MainTabs: View {
         }
         .onAppear {
             switch DemoData.screen {
-            case "contacts", "qr", "qr-verify": tab = .contacts
+            case "contacts", "qr", "qr-verify", "add", "contact": tab = .contacts
             case "nearby", "channels": tab = .nearby
             case "list-search": tab = .search
             case "settings": showSettings = true

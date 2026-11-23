@@ -93,7 +93,13 @@ struct NearbyView: View {
             }
             .navigationDestination(for: String.self) { id in ChatView(conversationId: id) }
             .navigationDestination(for: ChatRoute.self) { route in ChatView(conversationId: route.conversationId, focus: route.focus) }
-            .sheet(isPresented: $showAddContact) { AddContactView() }
+            .fullScreenCover(isPresented: $showAddContact) {
+                MyCardView(initialMode: .scan) { id in
+                    showAddContact = false
+                    path = NavigationPath()
+                    path.append(id)
+                }
+            }
             .fullScreenCover(isPresented: $showMyCard) {
                 MyCardView { id in
                     showMyCard = false
