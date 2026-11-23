@@ -41,7 +41,8 @@ final class VaultSync {
         case keychain(Int32)
     }
 
-    static let keychainService = "me.somalabs.relay.vault"
+    /// Tests point these at a scratch item so they never touch the app's own key.
+    nonisolated(unsafe) static var keychainService = "me.somalabs.relay.vault"
     static let keychainAccount = "vault-key-v1"
     static let dirtyKey = "vaultDirty"
     static let savedAtKey = "vaultSavedAt"
@@ -80,7 +81,8 @@ final class VaultSync {
         // Reinstall: UserDefaults is wiped, the Keychain is kept. A surviving key is resurrected only
         // with its credential id; without one the key is an orphan (nothing could unseal or
         // upload with it) and goes.
-        if !defaults.bool(forKey: Self.enabledKey), Self.keyExists() {
+        // `.locked` (before the first unlock since boot): nothing is decided, nothing is deleted.
+        if !defaults.bool(forKey: Self.enabledKey), case .found = Self.readKey() {
             if defaults.data(forKey: LockController.credentialKey) != nil {
                 defaults.set(true, forKey: Self.enabledKey)
             } else {

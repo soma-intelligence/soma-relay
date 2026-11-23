@@ -22,7 +22,11 @@ final class VaultSyncTests: XCTestCase {
     private var defaults: UserDefaults!
     private let oldCredential = Data(repeating: 0xA1, count: 16)
 
+    private let realService = VaultSync.keychainService
+
     override func setUp() {
+        // A scratch Keychain item: the app's own vault key is never touched.
+        VaultSync.keychainService = "me.somalabs.relay.vault.tests." + UUID().uuidString
         suite = "vaultsync-" + UUID().uuidString
         defaults = UserDefaults(suiteName: suite)
         VaultSync.deleteKey()
@@ -31,6 +35,7 @@ final class VaultSyncTests: XCTestCase {
     override func tearDown() {
         defaults.removePersistentDomain(forName: suite)
         VaultSync.deleteKey()
+        VaultSync.keychainService = realService
     }
 
     private func lock() -> LockController {
@@ -61,11 +66,13 @@ final class VaultSyncTests: XCTestCase {
     // MARK: (b) setUp ordering
 
     func testBadPRFLeavesNoNewCredentialAndKeepsTheOldPair() async throws {
-        let lock = lock()
-        lock.storeCredential(id: oldCredential)
-        XCTAssertEqual(VaultSync.storeKey(Data(repeating: 7, count: 32)), errSecSuccess)
+        // The model first: its own VaultSync (on .standard) runs before the scratch key exists.
         let model = AppModel()
         model.adoptCore(RelayCoreFactory.create(displayName: "Test"))
+        let lock = lock()
+        lock.storeCredential(id: oldCredential)
+        let oldKey = Data(repeating: 7, count: 32)
+        XCTAssertEqual(VaultSync.storeKey(oldKey), errSecSuccess)
         let sync = VaultSync(passkeys: StubPasskeys(prfSecond: Data(repeating: 0x22, count: 5)), defaults: defaults, lock: lock)
         sync.model = model
         do {
@@ -75,6 +82,10 @@ final class VaultSyncTests: XCTestCase {
             XCTAssertEqual(error, .badPRF)
         }
         XCTAssertEqual(lock.credentialID, oldCredential, "the new credential id was not stored")
+        XCTAssertTrue(VaultSync.keyExists(), "the old key is still there")
+        guard case .found(let kept) = VaultSync.readKey() else { return XCTFail("key unreadable") }
+        XCTAssertEqual(kept, oldKey)
+        XCTAssertTrue(defaults.bool(forKey: VaultSync.enabledKey), "the old pair is still on")
     }
 
     func testBadPRFOnFirstSetupStoresNoCredentialAtAll() async throws {

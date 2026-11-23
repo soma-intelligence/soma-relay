@@ -99,14 +99,13 @@ final class AppModel {
     init() {
         let args = UserDefaults.standard
         demo = AppConfig.demoAllowed && args.bool(forKey: "RelayDemoData")
-        let database = (try? AppDatabase(inMemory: demo)) ?? (try! AppDatabase(inMemory: true))
-        db = database
-        nodeURL = AppConfig.initialNodeURL(defaults: args, hasIdentity: !demo && database.value(for: "engine") != nil)
+        nodeURL = args.string(forKey: "nodeURL") ?? Self.defaultNodeURL
         handle = args.string(forKey: "handle") ?? ""
         visibleNearby = args.object(forKey: "visibleNearby") as? Bool ?? true
         nodeEnabled = args.object(forKey: "nodeEnabled") as? Bool ?? true
         linkPreviews = args.object(forKey: "linkPreviews") as? Bool ?? true
         notificationPreviews = args.object(forKey: "notificationPreviews") as? Bool ?? true
+        db = (try? AppDatabase(inMemory: demo)) ?? (try! AppDatabase(inMemory: true))
         node = NodeClient(
             baseURL: URL(string: nodeURL) ?? URL(string: Self.defaultNodeURL)!,
             core: { [weak self] in self?.core },
