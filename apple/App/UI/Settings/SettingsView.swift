@@ -249,7 +249,9 @@ private struct VaultRow: View {
     var body: some View {
         let vault = model.vault
         switch vault.status {
-        case .off:
+        case .off, .failed:
+            // `.failed` offers the setup too: a missing passkey or key can only be fixed by making
+            // a new one. Other upload retries come from the next save or node connection.
             Button {
                 Task {
                     do {
@@ -261,14 +263,21 @@ private struct VaultRow: View {
                     }
                 }
             } label: {
-                HStack {
-                    Label("Protéger avec un passkey", systemImage: "person.badge.key")
-                    if vault.busy { Spacer(); ProgressView() }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Label("Protéger avec un passkey", systemImage: "person.badge.key")
+                        if vault.busy { Spacer(); ProgressView() }
+                    }
+                    if case .failed(let message) = vault.status {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.danger)
+                    }
                 }
             }
             .disabled(vault.busy || !model.vaultCanSeal)
             .accessibilityIdentifier("vault.status")
-        case .pending, .failed:
+        case .pending:
             Button {
                 Task { await vault.flush() }
             } label: {

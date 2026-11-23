@@ -60,6 +60,8 @@ final class VaultSync {
     @ObservationIgnored weak var model: AppModel?
     @ObservationIgnored private let passkeys: any PasskeyProviding
     @ObservationIgnored private let defaults: UserDefaults
+    /// Tests only: a lock other than the model's.
+    @ObservationIgnored private let lockOverride: LockController?
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     /// The upload in flight; every `flush` caller awaits it rather than returning early.
     @ObservationIgnored private var uploadTask: Task<Bool, Never>?
@@ -71,11 +73,19 @@ final class VaultSync {
     @ObservationIgnored private var epoch = 0
     @ObservationIgnored private let log = Logger(subsystem: "me.somalabs.relay", category: "vault")
 
-    init(passkeys: any PasskeyProviding = PasskeyService.current, defaults: UserDefaults = .standard) {
+    init(passkeys: any PasskeyProviding = PasskeyService.current, defaults: UserDefaults = .standard, lock: LockController? = nil) {
+        self.lockOverride = lock
         self.passkeys = passkeys
         self.defaults = defaults
-        if !defaults.bool(forKey: Self.enabledKey), case .found = Self.readKey() {
-            defaults.set(true, forKey: Self.enabledKey)
+        // Reinstall: UserDefaults is wiped, the Keychain is kept. A surviving key is resurrected only
+        // with its credential id; without one the key is an orphan (nothing could unseal or
+        // upload with it) and goes.
+        if !defaults.bool(forKey: Self.enabledKey), Self.keyExists() {
+            if defaults.data(forKey: LockController.credentialKey) != nil {
+                defaults.set(true, forKey: Self.enabledKey)
+            } else {
+                Self.deleteKey()
+            }
         }
         status = initialStatus()
     }
@@ -111,18 +121,20 @@ final class VaultSync {
     /// is one (no further prompt), else through device authentication.
     func setUp(userName: String, enableLock: Bool = false) async throws -> SetupResult {
         guard let model, model.vaultCanSeal else { throw SetupError.noIdentity }
-        let lock = model.lock
+        let lock = lockOverride ?? model.lock
         guard !busy else { throw PasskeyFailure.cancelled }
         busy = true
         defer { busy = false }
 
         let registration = try await passkeys.register(userName: userName, userHandle: userHandle())
         let assertion = try await passkeys.assert(credentialID: registration.credentialID)
-        lock.storeCredential(id: assertion.credentialID)
-        let checkStored = assertion.prfFirst.map { lock.storeCheck(prfFirst: $0) } ?? false
+        // Nothing of the new passkey is stored until the vault key is: a failure before that leaves
+        // the previous credential id, check value and key (if any) as they were, never a mix.
         // `prfSupported` from the registration is not relied on: the assertion outputs decide.
         guard let prfSecond = assertion.prfSecond else {
             // No PRF: the passkey locks Relay, nothing to encrypt a backup with.
+            lock.storeCredential(id: assertion.credentialID)
+            let checkStored = assertion.prfFirst.map { lock.storeCheck(prfFirst: $0) } ?? false
             Self.deleteKey()
             hasKey = false
             dirty = false
@@ -141,6 +153,8 @@ final class VaultSync {
             status = .off
             throw SetupError.keychain(written)
         }
+        lock.storeCredential(id: assertion.credentialID)
+        let checkStored = assertion.prfFirst.map { lock.storeCheck(prfFirst: $0) } ?? false
         hasKey = true
         defaults.removeObject(forKey: Self.lockOnlyKey)
         defaults.removeObject(forKey: Self.savedAtKey)
@@ -384,10 +398,10 @@ final class VaultSync {
 
     // MARK: Keychain
 
-    private enum KeyRead { case found(Data), locked, missing }
+    enum KeyRead { case found(Data), locked, missing }
 
     /// `.locked`: the item exists but cannot be read yet (before the first unlock since boot).
-    private static func readKey() -> KeyRead {
+    static func readKey() -> KeyRead {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -403,7 +417,7 @@ final class VaultSync {
         }
     }
 
-    private static func storeKey(_ key: Data) -> OSStatus {
+    static func storeKey(_ key: Data) -> OSStatus {
         deleteKey()
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -415,7 +429,12 @@ final class VaultSync {
         return SecItemAdd(add as CFDictionary, nil)
     }
 
-    private static func deleteKey() {
+    static func keyExists() -> Bool {
+        if case .missing = readKey() { return false }
+        return true
+    }
+
+    static func deleteKey() {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
