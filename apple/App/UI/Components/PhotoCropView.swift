@@ -167,7 +167,6 @@ struct EditablePhoto: View {
     let photo: UIImage?
     var size: CGFloat = 84
     var icon: String?
-    var tint: Color = Theme.mesh.opacity(0.25)
     var cropTitle = "Recadrer"
     let onPick: (UIImage?) -> Void
 
@@ -192,14 +191,14 @@ struct EditablePhoto: View {
                 Button("Supprimer la photo", systemImage: "trash", role: .destructive) { onPick(nil) }
             }
         } label: {
-            Avatar(name: name, size: size, tint: tint, icon: icon, photo: photo)
+            DSAvatar(name: name, size: size, icon: icon, photo: photo)
                 .overlay(alignment: .bottomTrailing) {
                     Image(systemName: "camera.fill")
                         .font(.system(size: max(10, size * 0.14), weight: .semibold))
-                        .foregroundStyle(Theme.onStrong)
+                        .foregroundStyle(DS.onAccent)
                         .frame(width: max(22, size * 0.32), height: max(22, size * 0.32))
-                        .background(Theme.strong, in: Circle())
-                        .overlay(Circle().strokeBorder(Theme.background, lineWidth: 2))
+                        .background(DS.accentFill, in: Circle())
+                        .overlay(Circle().strokeBorder(DS.background, lineWidth: 2))
                         .offset(x: 2, y: 2)
                 }
         }
