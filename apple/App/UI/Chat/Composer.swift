@@ -1,10 +1,12 @@
+import Photos
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Glass composer: attachment panel (Photo, Caméra, Document, Position, Sondage), the text
-/// field ("Message chiffré", up to 6 lines) with the link preview it will send, and the round
-/// button that morphs from mic (hold to record, slide left to cancel) to send arrow.
+/// Glass composer: the round "+" that opens the Joindre sheet, the "Message" field (up to 6
+/// lines; encryption is stated once at the top of the thread) with the link preview it will
+/// send, and inside the field the mic (hold to record, slide left to cancel) that becomes the
+/// lime send button once there is text.
 struct Composer: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -21,6 +23,7 @@ struct Composer: View {
     @State private var showVideo = false
     @State private var showFiles = false
     @State private var showAttach = false
+    @State private var pendingAttach: AttachSheet.Action?
     @State private var showPoll = false
     @State private var showLocation = false
     @State private var working = false
@@ -37,15 +40,10 @@ struct Composer: View {
 
     private var isChannel: Bool { conversationId.hasPrefix("c:") }
     private static var hasCamera: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
-    private var showCameraButton: Bool { !hasText && editing == nil && !isChannel && (Self.hasCamera || model.demo) }
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 8) {
-            if showAttach {
-                attachPanel
-                    .transition(reduceMotion ? .opacity : .scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity))
-            }
             if let editing {
                 contextBar(icon: "pencil", title: "Modifier le message", detail: editing.message.text ?? "") {
                     withAnimation(.snappy) { self.editing = nil }
@@ -65,57 +63,60 @@ struct Composer: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             HStack(alignment: .bottom, spacing: 8) {
-                if recorder.recording {
-                    recordingStrip
-                } else {
-                    attachButton
-                    TextField(editing != nil ? "Message modifié" : isChannel ? "Message (non chiffré)" : "Message chiffré", text: $text, axis: .vertical)
-                        .font(.system(size: 16))
-                        .foregroundStyle(Theme.text)
-                        .lineLimit(1...6)
-                        .focused($focused)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 11)
-                        .frame(minHeight: 44)
-                        .onChange(of: text) { _, new in
-                            if !new.isEmpty { model.userIsTyping(in: conversationId) }
-                        }
-                        .task(id: text) { await refreshPreview() }
-                        .accessibilityLabel(editing != nil ? "Message modifié" : "Message")
-                    if showCameraButton {
-                        Button {
-                            Haptics.tap()
-                            focused = false
-                            showCamera = true
-                        } label: {
-                            Image(systemName: "camera")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundStyle(Theme.text)
-                                .frame(width: 40, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.scale(scale: 0.6).combined(with: .opacity))
-                        .accessibilityLabel("Caméra")
+                if !recorder.recording { attachButton }
+                HStack(alignment: .bottom, spacing: 6) {
+                    if recorder.recording {
+                        recordingStrip
+                    } else {
+                        TextField(editing != nil ? "Message modifié" : isChannel ? "Message (non chiffré)" : "Message", text: $text, axis: .vertical)
+                            .font(.system(size: 17))
+                            .foregroundStyle(DS.label)
+                            .lineLimit(1...6)
+                            .focused($focused)
+                            .padding(.vertical, 13)
+                            .frame(minHeight: 48)
+                            .onChange(of: text) { _, new in
+                                if !new.isEmpty { model.userIsTyping(in: conversationId) }
+                            }
+                            .task(id: text) { await refreshPreview() }
+                            .accessibilityLabel(editing != nil ? "Message modifié" : "Message")
                     }
+                    trailingButton
+                        .padding(.bottom, 5)
                 }
-                trailingButton
+                .padding(.leading, recorder.recording ? 6 : 18)
+                .padding(.trailing, 5)
+                .frame(minHeight: 48)
+                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
-            .glassBar()
         }
         .animation(.snappy(duration: 0.25), value: replyTo?.id)
         .animation(.snappy(duration: 0.25), value: editing?.id)
         .animation(.snappy(duration: 0.25), value: preview)
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.32, bounce: 0.25), value: showAttach)
         .animation(.snappy(duration: 0.2), value: recorder.recording)
-        .animation(.snappy(duration: 0.2), value: showCameraButton)
+        .animation(.snappy(duration: 0.2), value: hasText)
         .onChange(of: editing?.id) { _, id in
             guard id != nil, let editing else { return }
             text = editing.message.text ?? ""
             focused = true
         }
         .onChange(of: replyTo?.id) { _, id in if id != nil { focused = true } }
-        .onChange(of: focused) { _, f in if f { showAttach = false } }
+        .sheet(isPresented: $showAttach, onDismiss: runPendingAttach) {
+            AttachSheet(
+                isChannel: isChannel,
+                canUseCamera: Self.hasCamera || model.demo,
+                canRecordVideo: Self.hasCamera,
+                timer: isChannel ? nil : Binding(
+                    get: { model.conversations.first { $0.id == conversationId }?.expireS ?? 0 },
+                    set: { model.setTimer($0, in: conversationId) }),
+                choose: { action in
+                    pendingAttach = action
+                    showAttach = false
+                },
+                send: { assets, caption in
+                    Task { await sendAssets(assets, caption: caption) }
+                })
+        }
         .photosPicker(
             isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 10, selectionBehavior: .ordered,
             matching: .any(of: [.images, .videos]))
@@ -164,6 +165,7 @@ struct Composer: View {
         .onAppear {
             switch DemoData.screen {
             case "attach": showAttach = true
+            case "composer": text = "J'arrive dans 5 min"
             case "poll-new": showPoll = true
             case "location": showLocation = true
             case "camera-preview": showCamera = true
@@ -174,97 +176,63 @@ struct Composer: View {
         }
     }
 
-    // MARK: Attachments panel
+    // MARK: Attachments
 
     private var attachButton: some View {
         Button {
             Haptics.select()
             focused = false
-            showAttach.toggle()
+            showAttach = true
         } label: {
             Group {
                 if working {
                     ProgressView()
                 } else {
                     Image(systemName: "plus")
-                        .font(.system(size: 19, weight: .semibold))
-                        .rotationEffect(.degrees(showAttach ? 45 : 0))
+                        .font(.system(size: 20, weight: .medium))
                 }
             }
-            .roundIcon()
+            .foregroundStyle(DS.label)
+            .frame(width: 48, height: 48)
+            .glassEffect(.regular.interactive(), in: Circle())
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(working || editing != nil)
-        .accessibilityLabel(showAttach ? "Fermer les pièces jointes" : "Joindre")
+        .accessibilityLabel("Joindre")
     }
 
-    private struct AttachOption: Identifiable {
-        let id: String
-        let title: String
-        let icon: String
-        let tint: Color
-        let mediaOnly: Bool
-    }
-
-    private var attachOptions: [AttachOption] {
-        [
-            AttachOption(id: "photo", title: "Photo", icon: "photo.on.rectangle.angled", tint: Theme.net, mediaOnly: true),
-            AttachOption(id: "camera", title: "Caméra", icon: "camera.fill", tint: Color(UIColor(hex: 0x5B636E, alpha: 1)), mediaOnly: true),
-            AttachOption(id: "video", title: "Vidéo", icon: "video.fill", tint: Color(UIColor(hex: 0xD6455D, alpha: 1)), mediaOnly: true),
-            AttachOption(id: "document", title: "Document", icon: "doc.fill", tint: Color(UIColor(hex: 0x2B6CDF, alpha: 1)), mediaOnly: true),
-            AttachOption(id: "location", title: "Position", icon: "location.fill", tint: Color(UIColor(hex: 0x1E9E5A, alpha: 1)), mediaOnly: false),
-            AttachOption(id: "poll", title: "Sondage", icon: "chart.bar.fill", tint: Color(UIColor(hex: 0xE8772E, alpha: 1)), mediaOnly: false),
-        ]
-    }
-
-    private var attachPanel: some View {
-        VStack(spacing: 2) {
-            ForEach(attachOptions) { option in
-                let disabled = (isChannel && option.mediaOnly)
-                    || (option.id == "camera" && !Self.hasCamera && !model.demo)
-                    || (option.id == "video" && !Self.hasCamera)
-                Button {
-                    pick(option.id)
-                } label: {
-                    HStack(spacing: 14) {
-                        Image(systemName: option.icon)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 38, height: 38)
-                            .background(option.tint, in: Circle())
-                        Text(option.title)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(Theme.text)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(disabled)
-                .opacity(disabled ? 0.4 : 1)
-            }
+    /// Runs the action picked in the Joindre sheet once the sheet is gone, so the next sheet or
+    /// full-screen cover can present.
+    private func runPendingAttach() {
+        guard let action = pendingAttach else { return }
+        pendingAttach = nil
+        switch action {
+        case .photos: showPhotos = true
+        case .camera: showCamera = true
+        case .video: showVideo = true
+        case .file: showFiles = true
+        case .location: showLocation = true
+        case .poll: showPoll = true
         }
-        .padding(8)
-        .frame(width: 230)
-        .glassEffect(.regular.tint(Theme.glassFill), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(Theme.glassStroke, lineWidth: 1) }
-        .shadow(color: Theme.shadow, radius: 16, y: 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func pick(_ id: String) {
-        showAttach = false
-        Haptics.tap()
-        switch id {
-        case "photo": showPhotos = true
-        case "camera": showCamera = true
-        case "video": showVideo = true
-        case "document": showFiles = true
-        case "location": showLocation = true
-        case "poll": showPoll = true
-        default: break
+    /// Photos picked in the sheet's strip, one message each in the order picked, then the
+    /// caption as a text message (same as the camera flow).
+    private func sendAssets(_ assets: [PHAsset], caption: String) async {
+        working = true
+        defer { working = false }
+        for asset in assets {
+            guard let data = await RecentPhotos.data(of: asset),
+                let encoded = await Task.detached(operation: { MediaEncoder.image(from: data) }).value
+            else {
+                fail()
+                continue
+            }
+            await model.sendAttachment(encoded.data, kind: .image, mime: encoded.mime, width: encoded.width, height: encoded.height, thumb: encoded.thumb, in: conversationId)
+        }
+        if !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            model.send(text: caption, in: conversationId)
         }
     }
 
@@ -272,29 +240,30 @@ struct Composer: View {
 
     private func contextBar(icon: String, title: String, detail: String, close: @escaping () -> Void) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.mesh)
-                .frame(width: 20)
+            Capsule().fill(DS.accent).frame(width: 3, height: 34)
+                .accessibilityLabel(icon == "pencil" ? "Modification" : "Réponse")
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.text)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(DS.accent)
                 Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(Theme.secondary)
+                    .font(.system(size: 15))
+                    .foregroundStyle(DS.label2)
                     .lineLimit(1)
             }
             Spacer()
             Button(action: close) {
-                Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).roundIcon(size: 32)
+                Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(DS.label)
+                    .frame(width: 32, height: 32)
+                    .background(DS.fill2, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Annuler")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
@@ -304,20 +273,20 @@ struct Composer: View {
                 if let b64 = state.link?.image, let data = Data(base64Encoded: b64), let image = UIImage(data: data) {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
-                    Image(systemName: "link").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.secondary)
+                    Image(systemName: "link").font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.label2)
                 }
             }
             .frame(width: 40, height: 40)
-            .background(Theme.softButton)
+            .background(DS.fill2)
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
                 Text(state.loading ? "Aperçu du lien…" : (state.link?.title ?? state.url.host() ?? ""))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.text)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(DS.label)
                     .lineLimit(1)
                 Text(state.link?.site ?? state.url.host() ?? "")
-                    .font(Theme.mono(10))
-                    .foregroundStyle(Theme.secondary)
+                    .font(DS.TextStyle.footnote)
+                    .foregroundStyle(DS.label2)
                     .lineLimit(1)
             }
             Spacer()
@@ -326,7 +295,10 @@ struct Composer: View {
                 dismissedURL = state.url
                 withAnimation(.snappy) { preview = nil }
             } label: {
-                Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).roundIcon(size: 32)
+                Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(DS.label)
+                    .frame(width: 32, height: 32)
+                    .background(DS.fill2, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Envoyer sans aperçu")
@@ -357,12 +329,19 @@ struct Composer: View {
 
     // MARK: Send button
 
+    /// Mic while the field is empty (hold to record); lime send arrow, or a check when editing,
+    /// once there is something to send.
     private var trailingButton: some View {
         let showSend = hasText || editing != nil
+        let lime = showSend && !recorder.recording
         return Image(systemName: recorder.recording ? "waveform" : showSend ? (editing != nil ? "checkmark" : "arrow.up") : "mic.fill")
-            .font(.system(size: 18, weight: showSend ? .bold : .semibold))
+            .font(.system(size: 17, weight: showSend ? .bold : .medium))
             .contentTransition(.symbolEffect(.replace.downUp))
-            .roundIcon(fill: recorder.recording ? Theme.danger : Theme.strong, foreground: recorder.recording ? .white : Theme.onStrong)
+            .foregroundStyle(recorder.recording ? Color.white : lime ? DS.onAccent : DS.label2)
+            .frame(width: 38, height: 38)
+            .background(recorder.recording ? DS.danger : lime ? DS.accentFill : Color.clear, in: Circle())
+            .shadow(color: lime ? DS.accentFill.opacity(0.35) : .clear, radius: 8)
+            .contentShape(Circle())
             .scaleEffect(recorder.recording ? 1.12 : 1)
             .opacity(!showSend && isChannel ? 0.4 : 1)
             .gesture(showSend ? nil : (isChannel ? nil : holdToRecord))
@@ -399,20 +378,20 @@ struct Composer: View {
 
     private var recordingStrip: some View {
         HStack(spacing: 10) {
-            Circle().fill(Theme.danger).frame(width: 10, height: 10).padding(.leading, 12)
+            Circle().fill(DS.danger).frame(width: 10, height: 10).padding(.leading, 12)
             Text(MessageRow.duration(Int(recorder.elapsed * 1000)))
-                .font(Theme.mono(13, weight: .medium))
-                .foregroundStyle(Theme.text)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(DS.label)
                 .monospacedDigit()
-            Waveform(levels: Array(recorder.levels.suffix(40)), progress: 1, active: Theme.mesh)
+            Waveform(levels: Array(recorder.levels.suffix(40)), progress: 1, active: DS.accent)
                 .frame(height: 24)
             Text(cancelDrag < -80 ? "Relâche pour annuler" : "‹ Glisse pour annuler")
                 .font(.caption)
-                .foregroundStyle(cancelDrag < -80 ? Theme.danger : Theme.secondary)
+                .foregroundStyle(cancelDrag < -80 ? DS.danger : DS.label2)
                 .lineLimit(1)
                 .fixedSize()
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: 48)
         .frame(maxWidth: .infinity, alignment: .leading)
         .offset(x: max(-60, cancelDrag / 3))
         .transition(.opacity)
@@ -623,9 +602,11 @@ struct CameraSendFlow: View {
                     .lineLimit(1...4)
                     .focused($captionFocused)
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .font(DS.TextStyle.body)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 13)
+                    .frame(minHeight: 48)
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                     .accessibilityLabel("Légende")
                 HStack(spacing: 12) {
                     Button {
@@ -634,21 +615,15 @@ struct CameraSendFlow: View {
                         withAnimation(.smooth) { shot = nil }
                     } label: {
                         Label("Reprendre", systemImage: "arrow.counterclockwise")
-                            .font(.body.weight(.medium))
-                            .frame(maxWidth: .infinity)
-                            .frame(minHeight: 50)
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.dsSecondary)
                     Button {
                         Haptics.success()
                         onSend(image, caption)
                     } label: {
                         Label("Envoyer", systemImage: "arrow.up")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .frame(minHeight: 50)
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.dsPrimary)
                 }
             }
             .padding(.horizontal, 16)
