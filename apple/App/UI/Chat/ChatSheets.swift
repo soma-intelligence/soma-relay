@@ -48,7 +48,7 @@ struct PollComposer: View {
                     ForEach($options) { $option in
                         HStack(spacing: 10) {
                             Image(systemName: multi ? "square" : "circle")
-                                .foregroundStyle(Theme.dashed)
+                                .foregroundStyle(DS.label3)
                                 .accessibilityHidden(true)
                             TextField("Option \((options.firstIndex(of: option) ?? 0) + 1)", text: $option.text)
                                 .focused($focus, equals: option.id)
@@ -75,8 +75,12 @@ struct PollComposer: View {
                 }
                 Section {
                     Toggle("Plusieurs réponses", isOn: $multi.animation(.snappy))
+                        .tint(DS.accentFill)
                 }
+                .listRowBackground(DS.cell)
             }
+            .scrollContentBackground(.hidden)
+            .background(DS.background)
             .navigationTitle("Sondage")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -84,11 +88,12 @@ struct PollComposer: View {
                     Button("Annuler", role: .cancel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Envoyer") {
+                    Button("Envoyer", systemImage: "arrow.up") {
                         onSend(question, filled, multi)
                         Haptics.success()
                         dismiss()
                     }
+                    .tint(DS.accentFill)
                     .disabled(!valid)
                 }
             }
@@ -131,8 +136,8 @@ struct LocationSheet: View {
                 if let coordinate {
                     Annotation("Toi", coordinate: coordinate) {
                         ZStack {
-                            Circle().fill(Theme.net.opacity(0.18)).frame(width: 44, height: 44)
-                            Circle().fill(Theme.net).frame(width: 16, height: 16)
+                            Circle().fill(DS.accentFill.opacity(0.22)).frame(width: 44, height: 44)
+                            Circle().fill(DS.accentFill).frame(width: 16, height: 16)
                                 .overlay(Circle().strokeBorder(.white, lineWidth: 3))
                                 .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
                         }
@@ -165,11 +170,11 @@ struct LocationSheet: View {
             if sharer.denied && !model.demo {
                 Text("Soma Relay n'a pas accès à ta position.")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.text)
+                    .foregroundStyle(DS.label)
                 Button("Ouvrir les Réglages") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.dsPrimary)
             } else {
                 Button {
                     send(live: nil)
@@ -177,38 +182,39 @@ struct LocationSheet: View {
                     HStack(spacing: 12) {
                         Image(systemName: "mappin.and.ellipse")
                             .font(.system(size: 18, weight: .semibold))
-                            .frame(width: 40, height: 40)
-                            .background(Theme.danger, in: Circle())
-                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(DS.fill2, in: Circle())
+                            .foregroundStyle(DS.label)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Envoyer ma position")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(Theme.text)
+                                .font(DS.TextStyle.headline)
+                                .foregroundStyle(DS.label)
                             Text(accuracyText)
-                                .font(Theme.mono(11))
-                                .foregroundStyle(Theme.secondary)
+                                .font(DS.TextStyle.footnote)
+                                .foregroundStyle(DS.label2)
                         }
                         Spacer()
+                        DSChevron()
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(coordinate == nil)
-                Divider().overlay(Theme.cardStroke)
+                Rectangle().fill(DS.separator).frame(height: 0.5)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 12) {
                         Image(systemName: "location.fill.viewfinder")
                             .font(.system(size: 18, weight: .semibold))
-                            .frame(width: 40, height: 40)
-                            .background(Theme.mesh, in: Circle())
-                            .foregroundStyle(Theme.onMesh)
+                            .frame(width: 44, height: 44)
+                            .background(DS.accentSoft, in: Circle())
+                            .foregroundStyle(DS.accent)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Partager en direct")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(Theme.text)
+                                .font(DS.TextStyle.headline)
+                                .foregroundStyle(DS.label)
                             Text("Ta position suit tes déplacements, chiffrée.")
-                                .font(.caption)
-                                .foregroundStyle(Theme.secondary)
+                                .font(DS.TextStyle.footnote)
+                                .foregroundStyle(DS.label2)
                         }
                     }
                     Picker("Durée", selection: $duration) {
@@ -219,16 +225,14 @@ struct LocationSheet: View {
                         send(live: duration)
                     } label: {
                         Text("Partager pendant \(Self.durations.first { $0.0 == duration }?.1 ?? "")")
-                            .font(.body.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 30)
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.dsPrimary)
                     .disabled(coordinate == nil)
                 }
             }
         }
-        .padding(16)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .padding(20)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
     }
@@ -265,7 +269,7 @@ struct MapViewer: View {
                 Image(systemName: live ? "location.circle.fill" : "mappin.circle.fill")
                     .font(.system(size: 36))
                     .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, live ? Theme.mesh : Theme.danger)
+                    .foregroundStyle(live ? DS.onAccent : .white, live ? DS.accentFill : DS.danger)
                     .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
             }
         }
@@ -274,46 +278,48 @@ struct MapViewer: View {
             Button {
                 dismiss()
             } label: {
-                Image(systemName: "xmark").font(.system(size: 16, weight: .semibold)).roundIcon()
+                Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(DS.label)
+                    .frame(width: DS.roundButton, height: DS.roundButton)
+                    .glassEffect(.regular.interactive(), in: Circle())
             }
             .buttonStyle(.plain)
-            .glassEffect(.regular, in: Circle())
             .padding()
             .accessibilityLabel("Fermer")
         }
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    if live { Circle().fill(Theme.danger).frame(width: 8, height: 8) }
+                    if live { DSStatusDot() }
                     Text(live ? "\(name) · en direct" : name)
-                        .font(.headline)
-                        .foregroundStyle(Theme.text)
+                        .font(DS.TextStyle.headline)
+                        .foregroundStyle(DS.label)
                 }
                 Text(detail(live: live, coord: coord))
-                    .font(Theme.mono(11))
-                    .foregroundStyle(Theme.secondary)
+                    .font(DS.TextStyle.footnote)
+                    .foregroundStyle(DS.label2)
                 HStack(spacing: 10) {
                     Button {
                         let q = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Position"
                         if let url = URL(string: "https://maps.apple.com/?ll=\(coord.0),\(coord.1)&q=\(q)") { openURL(url) }
                     } label: {
                         Label("Ouvrir dans Plans", systemImage: "map")
-                            .frame(maxWidth: .infinity, minHeight: 30)
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.dsPrimary)
                     if live, let onStop {
                         Button(role: .destructive) {
                             onStop()
                         } label: {
-                            Text("Arrêter").frame(minHeight: 30)
+                            Text("Arrêter").foregroundStyle(DS.danger).padding(.horizontal, 20)
                         }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.dsSecondary)
+                        .fixedSize()
                     }
                 }
             }
-            .padding(16)
+            .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
             .padding(.horizontal, 12)
         }
         .onChange(of: coord.0 + coord.1, initial: true) {
@@ -359,11 +365,11 @@ struct ForwardSheet: View {
                 } label: {
                     HStack(spacing: 12) {
                         Avatar(
-                            name: c.title, size: 40, tint: Theme.incoming, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil,
+                            name: c.title, size: 40, tint: DS.cell2, icon: c.kind == .channel ? "number" : c.kind == .group ? "person.3.fill" : nil,
                             photo: model.photo(of: c))
-                        Text(c.title).foregroundStyle(Theme.text)
+                        Text(c.title).foregroundStyle(DS.label)
                         Spacer()
-                        Image(systemName: "arrowshape.turn.up.right").foregroundStyle(Theme.secondary)
+                        Image(systemName: "arrowshape.turn.up.right").foregroundStyle(DS.label2)
                     }
                 }
             }
@@ -412,7 +418,7 @@ struct MessageInfoView: View {
                 }
                 Section {
                     LabeledContent("Identifiant") {
-                        Text(item.id).font(Theme.mono(11)).textSelection(.enabled)
+                        Text(item.id).font(DS.TextStyle.fingerprint(11)).textSelection(.enabled)
                     }
                 } footer: {
                     Text("Chiffré de bout en bout. Ces détails ne quittent pas ton téléphone.")
@@ -458,27 +464,35 @@ struct EmojiPickerSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 6), spacing: 8) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 6), spacing: 8) {
                     ForEach(Self.emojis, id: \.self) { e in
                         Button {
                             pick(e)
                         } label: {
-                            Text(e).font(.system(size: 32)).frame(maxWidth: .infinity, minHeight: 48)
+                            Text(e).font(.system(size: 30))
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                                .background(DS.fill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(e)
                     }
                 }
-                .padding()
+                .padding(.horizontal, DS.Space.margin)
+                .padding(.top, 8)
                 TextField("Ou tape un emoji", text: $custom)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal)
+                    .font(DS.TextStyle.body)
+                    .padding(.horizontal, 18)
+                    .frame(height: 48)
+                    .background(DS.fill, in: Capsule())
+                    .padding(.horizontal, DS.Space.margin)
+                    .padding(.vertical, 16)
                     .onChange(of: custom) { _, new in
                         if let first = new.first, first.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation || $0.properties.isEmoji && $0.value > 0x2000 }) {
                             pick(String(first))
                         }
                     }
             }
+            .background(DS.background)
             .navigationTitle("Réagir")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
