@@ -10,6 +10,21 @@ The project is inspired by [bitchat](https://github.com/permissionlesstech/bitch
 
 > Status: v1, iOS first, plus a web client for testing. Android and macOS clients are planned. The cryptography has not been audited yet. Do not rely on it for life-or-death situations until it has been.
 
+## Quick start
+
+1. Open the web client on the public test node in two tabs: [profile a](https://hushrelay.westus2.cloudapp.azure.com/?profile=a) and [profile b](https://hushrelay.westus2.cloudapp.azure.com/?profile=b). Pick a name in each (the web client is in French for now).
+2. In tab b, open your card ("Ma carte") and copy your short link ("Lien court").
+3. In tab a, tap "Ajouter un contact", paste the link and send a message. It shows up in tab b, end-to-end encrypted.
+
+To build from source, run the core crypto tests (about a minute on a fresh clone):
+
+```bash
+git clone https://github.com/soma-intelligence/soma-relay && cd soma-relay
+cargo test -p relay-core
+```
+
+Full setup: [Build from source](#build-from-source) and [Run your own node](#run-your-own-node).
+
 ## What it does
 
 | | |
