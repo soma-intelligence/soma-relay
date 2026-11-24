@@ -24,12 +24,20 @@ final class VaultSyncTests: XCTestCase {
 
     private let realService = VaultSync.keychainService
 
-    override func setUp() {
+    override func setUpWithError() throws {
         // A scratch Keychain item: the app's own vault key is never touched.
         VaultSync.keychainService = "me.somalabs.relay.vault.tests." + UUID().uuidString
         suite = "vaultsync-" + UUID().uuidString
         defaults = UserDefaults(suiteName: suite)
         VaultSync.deleteKey()
+        // An unsigned build (CODE_SIGNING_ALLOWED=NO) has no Keychain entitlement:
+        // every SecItem call answers errSecMissingEntitlement (-34018). Skip rather
+        // than fail; the default simulator signing ("Sign to Run Locally") runs them.
+        let probe = VaultSync.storeKey(Data(repeating: 0, count: 32))
+        VaultSync.deleteKey()
+        if probe == errSecMissingEntitlement {
+            throw XCTSkip("Keychain unavailable in an unsigned test host (-34018). Run with code signing.")
+        }
     }
 
     override func tearDown() {
